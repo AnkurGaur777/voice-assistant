@@ -17,16 +17,26 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_ollama import ChatOllama
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt import ToolNode, tools_condition
+
+from src.agent.tools.datetime_tool import get_current_datetime
+from src.agent.tools.web_search import web_search
 
 # --- Default Configuration ---
 DEFAULT_MODEL = "llama3.2:3b"
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_KEEP_ALIVE = "30m"
+DEFAULT_TOOLS = [get_current_datetime, web_search]
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, a fast, capable, and intelligent local voice assistant. "
-    "Keep your responses concise, natural, and conversational — suitable for being spoken aloud, "
+    "You have access to the following tools: "
+    "1. `get_current_datetime`: Call this tool for any questions regarding the current date, time, "
+    "day of the week, month, or year. Always use get_current_datetime (never web_search) for date or time queries. "
+    "2. `web_search`: Call this tool to look up live external information, such as breaking news, weather, "
+    "sports scores, or events beyond your training data. "
+    "Keep your final responses concise, natural, and conversational — suitable for being spoken aloud, "
     "ideally under ~40 words unless the user explicitly asks for detail, an explanation, or a list. "
     "Avoid markdown formatting, headers, or bullet points unless specifically requested."
 )
@@ -65,11 +75,11 @@ def get_ollama_llm(
     )
 
 
-def create_llm_node(llm: ChatOllama, system_prompt: str = DEFAULT_SYSTEM_PROMPT):
+def create_llm_node(llm: Any, system_prompt: str = DEFAULT_SYSTEM_PROMPT):
     """
     Factory creating the llm_node for the LangGraph workflow.
     Ensures the system persona prompt is anchored at the start of context,
-    and logs whether the Ollama call was 'cold' (model load required) or 'warm' (model resident).
+    logs whether the Ollama call was 'cold' or 'warm', and logs any tool invocations.
     """
     def llm_node(state: AgentState) -> Dict[str, List[BaseMessage]]:
         raw_messages = list(state["messages"])
@@ -95,6 +105,13 @@ def create_llm_node(llm: ChatOllama, system_prompt: str = DEFAULT_SYSTEM_PROMPT)
                 call_type = f"WARM call (model resident in VRAM: {load_duration_s * 1000:.1f}ms)"
             print(f"[Ollama ({model_name})] {call_type}")
 
+        # Check if the model requested any tool calls and log them
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            for tc in response.tool_calls:
+                tool_name = tc.get("name", "unknown")
+                tool_args = tc.get("args", {})
+                print(f"[Tool Invoked by Agent] {tool_name}(args={tool_args})")
+
         return {"messages": [response]}
 
     return llm_node
@@ -107,13 +124,17 @@ def build_graph(
     num_predict: Optional[int] = None,
     keep_alive: str = DEFAULT_KEEP_ALIVE,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    tools: Optional[Sequence[Any]] = None,
 ):
     """
-    Constructs and compiles the minimal LangGraph agent state machine:
-      START -> llm_node -> END
+    Constructs and compiles the LangGraph agent state machine:
+      START -> llm_node -> (tools_condition: has tool_calls? -> tools_node -> llm_node : END)
 
-    Returns a compiled LangGraph Runnable configured for the specified model.
+    Returns a compiled LangGraph Runnable configured for the specified model and tools.
     """
+    if tools is None:
+        tools = list(DEFAULT_TOOLS)
+
     llm = get_ollama_llm(
         model=model,
         base_url=base_url,
@@ -121,12 +142,19 @@ def build_graph(
         num_predict=num_predict,
         keep_alive=keep_alive,
     )
-    llm_node = create_llm_node(llm=llm, system_prompt=system_prompt)
+    bound_llm = llm.bind_tools(tools) if tools else llm
+    llm_node = create_llm_node(llm=bound_llm, system_prompt=system_prompt)
 
     workflow = StateGraph(AgentState)
     workflow.add_node("llm", llm_node)
     workflow.add_edge(START, "llm")
-    workflow.add_edge("llm", END)
+
+    if tools:
+        workflow.add_node("tools", ToolNode(tools))
+        workflow.add_conditional_edges("llm", tools_condition)
+        workflow.add_edge("tools", "llm")
+    else:
+        workflow.add_edge("llm", END)
 
     return workflow.compile()
 
@@ -142,12 +170,18 @@ def get_agent_app(
     num_predict: Optional[int] = None,
     keep_alive: str = DEFAULT_KEEP_ALIVE,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    tools: Optional[Sequence[Any]] = None,
 ):
     """
     Returns a cached compiled agent graph instance for the specified model configuration.
-    Avoids recompiling on every turn while correctly isolating different models in memory.
+    Avoids recompiling on every turn while correctly isolating different configurations in memory.
     """
-    cache_key = f"{model}::{base_url}::{temperature}::{num_predict}::{keep_alive}::{hash(system_prompt)}"
+    tools_tuple = tuple(tools) if tools is not None else tuple(DEFAULT_TOOLS)
+    tools_key = tuple(getattr(t, "name", str(t)) for t in tools_tuple)
+    cache_key = (
+        f"{model}::{base_url}::{temperature}::{num_predict}::{keep_alive}::"
+        f"{hash(system_prompt)}::{tools_key}"
+    )
     if cache_key not in _AGENT_APPS:
         _AGENT_APPS[cache_key] = build_graph(
             model=model,
@@ -156,6 +190,7 @@ def get_agent_app(
             num_predict=num_predict,
             keep_alive=keep_alive,
             system_prompt=system_prompt,
+            tools=tools_tuple,
         )
     return _AGENT_APPS[cache_key]
 
@@ -166,6 +201,7 @@ def get_default_agent_app(
     temperature: float = DEFAULT_TEMPERATURE,
     num_predict: Optional[int] = None,
     keep_alive: str = DEFAULT_KEEP_ALIVE,
+    tools: Optional[Sequence[Any]] = None,
 ):
     """Backwards-compatible alias for get_agent_app."""
     return get_agent_app(
@@ -174,6 +210,7 @@ def get_default_agent_app(
         temperature=temperature,
         num_predict=num_predict,
         keep_alive=keep_alive,
+        tools=tools,
     )
 
 
@@ -187,6 +224,7 @@ def run_agent(
     num_predict: Optional[int] = None,
     keep_alive: str = DEFAULT_KEEP_ALIVE,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
+    tools: Optional[Sequence[Any]] = None,
 ) -> Tuple[str, List[BaseMessage]]:
     """
     Executes a single conversational turn through the LangGraph agent.
@@ -200,6 +238,7 @@ def run_agent(
     :param num_predict: Optional token limit cap for response generation.
     :param keep_alive: Time duration to keep model loaded in VRAM (default: "30m").
     :param system_prompt: System prompt for the agent persona.
+    :param tools: Sequence of tools to bind to the agent (defaults to DEFAULT_TOOLS).
     :return: (assistant_response_text, updated_message_history)
     """
     if app is None:
@@ -210,6 +249,7 @@ def run_agent(
             num_predict=num_predict,
             keep_alive=keep_alive,
             system_prompt=system_prompt,
+            tools=tools,
         )
 
     current_messages: List[BaseMessage] = list(history) if history else []
