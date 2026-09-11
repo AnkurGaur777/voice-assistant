@@ -91,8 +91,6 @@ def chat_loop(
             continue
 
         turn_count += 1
-        print("Jarvis is thinking...", end="\r", flush=True)
-
         start_time = time.perf_counter()
         try:
             response_text, history = run_agent(
@@ -103,14 +101,10 @@ def chat_loop(
                 base_url=base_url,
             )
             latency = time.perf_counter() - start_time
-            # Clear the 'thinking' line
-            print(" " * 30, end="\r", flush=True)
-
             print(f"Jarvis > {response_text}\n")
             print(f"         [Latency: {latency:.3f}s | Turn: #{turn_count} | GPU: RTX 3050 | MaxTokens: {max_tokens}]\n")
         except Exception as err:
             latency = time.perf_counter() - start_time
-            print(" " * 30, end="\r", flush=True)
             print(f"\n[Error during inference: {err}]", file=sys.stderr)
             print(f"Make sure Ollama is responding at {base_url}.\n", file=sys.stderr)
 

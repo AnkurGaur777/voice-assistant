@@ -22,6 +22,7 @@ from langgraph.graph.message import add_messages
 DEFAULT_MODEL = "llama3.1:8b"
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TEMPERATURE = 0.7
+DEFAULT_KEEP_ALIVE = "30m"
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, a fast, capable, and intelligent local voice assistant. "
@@ -44,10 +45,12 @@ def get_ollama_llm(
     base_url: str = DEFAULT_BASE_URL,
     temperature: float = DEFAULT_TEMPERATURE,
     num_predict: Optional[int] = None,
+    keep_alive: str = DEFAULT_KEEP_ALIVE,
     **kwargs: Any,
 ) -> ChatOllama:
     """
     Initializes and returns a ChatOllama LLM client connected to local Ollama.
+    keep_alive="30m" ensures the model remains resident in GPU VRAM between queries.
     """
     llm_kwargs = {**kwargs}
     if num_predict is not None:
@@ -57,6 +60,7 @@ def get_ollama_llm(
         model=model,
         base_url=base_url,
         temperature=temperature,
+        keep_alive=keep_alive,
         **llm_kwargs,
     )
 
@@ -64,7 +68,8 @@ def get_ollama_llm(
 def create_llm_node(llm: ChatOllama, system_prompt: str = DEFAULT_SYSTEM_PROMPT):
     """
     Factory creating the llm_node for the LangGraph workflow.
-    Ensures the system persona prompt is anchored at the start of context.
+    Ensures the system persona prompt is anchored at the start of context,
+    and logs whether the Ollama call was 'cold' (model load required) or 'warm' (model resident).
     """
     def llm_node(state: AgentState) -> Dict[str, List[BaseMessage]]:
         raw_messages = list(state["messages"])
@@ -76,6 +81,19 @@ def create_llm_node(llm: ChatOllama, system_prompt: str = DEFAULT_SYSTEM_PROMPT)
             messages = raw_messages
 
         response = llm.invoke(messages)
+
+        # Inspect Ollama response metadata to log cold vs warm status
+        metadata = getattr(response, "response_metadata", {}) or {}
+        load_duration_ns = metadata.get("load_duration", 0)
+        if load_duration_ns is not None:
+            load_duration_s = load_duration_ns / 1e9
+            # Over 0.5s indicates model weights had to be loaded from storage to VRAM
+            if load_duration_s >= 0.5:
+                call_type = f"COLD call (model load required: {load_duration_s:.2f}s)"
+            else:
+                call_type = f"WARM call (model resident in VRAM: {load_duration_s * 1000:.1f}ms)"
+            print(f"[Ollama] {call_type}")
+
         return {"messages": [response]}
 
     return llm_node
@@ -86,6 +104,7 @@ def build_graph(
     base_url: str = DEFAULT_BASE_URL,
     temperature: float = DEFAULT_TEMPERATURE,
     num_predict: Optional[int] = None,
+    keep_alive: str = DEFAULT_KEEP_ALIVE,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
 ):
     """
@@ -99,6 +118,7 @@ def build_graph(
         base_url=base_url,
         temperature=temperature,
         num_predict=num_predict,
+        keep_alive=keep_alive,
     )
     llm_node = create_llm_node(llm=llm, system_prompt=system_prompt)
 
@@ -119,6 +139,7 @@ def get_default_agent_app(
     base_url: str = DEFAULT_BASE_URL,
     temperature: float = DEFAULT_TEMPERATURE,
     num_predict: Optional[int] = None,
+    keep_alive: str = DEFAULT_KEEP_ALIVE,
 ):
     """
     Returns a cached compiled agent graph instance to avoid recompiling on every turn.
@@ -130,6 +151,7 @@ def get_default_agent_app(
             base_url=base_url,
             temperature=temperature,
             num_predict=num_predict,
+            keep_alive=keep_alive,
         )
     return _DEFAULT_AGENT_APP
 
@@ -141,6 +163,7 @@ def run_agent(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     num_predict: Optional[int] = None,
+    keep_alive: str = DEFAULT_KEEP_ALIVE,
 ) -> Tuple[str, List[BaseMessage]]:
     """
     Executes a single conversational turn through the LangGraph agent.
@@ -151,10 +174,16 @@ def run_agent(
     :param model: Ollama model name.
     :param base_url: Ollama API endpoint.
     :param num_predict: Optional token limit cap for response generation.
+    :param keep_alive: Time duration to keep model loaded in VRAM (default: "30m").
     :return: (assistant_response_text, updated_message_history)
     """
     if app is None:
-        app = get_default_agent_app(model=model, base_url=base_url, num_predict=num_predict)
+        app = get_default_agent_app(
+            model=model,
+            base_url=base_url,
+            num_predict=num_predict,
+            keep_alive=keep_alive,
+        )
 
     current_messages: List[BaseMessage] = list(history) if history else []
     current_messages.append(HumanMessage(content=user_input))
