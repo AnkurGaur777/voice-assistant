@@ -1,0 +1,4 @@
+timestamp,model_name,device,compute_type,cpu_threads,audio_file,audio_duration_s,load_time_s,latency_s,rtf,transcribed_text
+2026-09-11 23:26:41,tiny,cpu,int8,4,clip_20260911_185651_757.wav,5.36,1.941,0.626,0.117,can you send it to me?
+2026-09-11 23:26:44,base,cpu,int8,4,clip_20260911_185651_757.wav,5.36,0.989,1.692,0.316,list.  Can you listen to me?
+2026-09-11 23:27:24,small,cpu,int8,4,clip_20260911_185651_757.wav,5.36,37.215,2.73,0.509,Can you listen to me?
