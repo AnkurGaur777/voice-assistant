@@ -19,7 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
 # --- Default Configuration ---
-DEFAULT_MODEL = "llama3.1:8b"
+DEFAULT_MODEL = "llama3.2:3b"
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_KEEP_ALIVE = "30m"
