@@ -25,9 +25,9 @@ DEFAULT_TEMPERATURE = 0.7
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, a fast, capable, and intelligent local voice assistant. "
-    "Respond in a natural, direct, and concise conversational tone suitable for spoken dialogue. "
-    "Keep answers informative yet brief unless the user asks for in-depth details. "
-    "Avoid unnecessary markdown headers or bullet points unless specifically requested."
+    "Keep your responses concise, natural, and conversational — suitable for being spoken aloud, "
+    "ideally under ~40 words unless the user explicitly asks for detail, an explanation, or a list. "
+    "Avoid markdown formatting, headers, or bullet points unless specifically requested."
 )
 
 
@@ -43,16 +43,21 @@ def get_ollama_llm(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     temperature: float = DEFAULT_TEMPERATURE,
+    num_predict: Optional[int] = None,
     **kwargs: Any,
 ) -> ChatOllama:
     """
     Initializes and returns a ChatOllama LLM client connected to local Ollama.
     """
+    llm_kwargs = {**kwargs}
+    if num_predict is not None:
+        llm_kwargs["num_predict"] = num_predict
+
     return ChatOllama(
         model=model,
         base_url=base_url,
         temperature=temperature,
-        **kwargs,
+        **llm_kwargs,
     )
 
 
@@ -80,6 +85,7 @@ def build_graph(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     temperature: float = DEFAULT_TEMPERATURE,
+    num_predict: Optional[int] = None,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
 ):
     """
@@ -92,6 +98,7 @@ def build_graph(
         model=model,
         base_url=base_url,
         temperature=temperature,
+        num_predict=num_predict,
     )
     llm_node = create_llm_node(llm=llm, system_prompt=system_prompt)
 
@@ -111,6 +118,7 @@ def get_default_agent_app(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     temperature: float = DEFAULT_TEMPERATURE,
+    num_predict: Optional[int] = None,
 ):
     """
     Returns a cached compiled agent graph instance to avoid recompiling on every turn.
@@ -121,6 +129,7 @@ def get_default_agent_app(
             model=model,
             base_url=base_url,
             temperature=temperature,
+            num_predict=num_predict,
         )
     return _DEFAULT_AGENT_APP
 
@@ -131,6 +140,7 @@ def run_agent(
     app=None,
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
+    num_predict: Optional[int] = None,
 ) -> Tuple[str, List[BaseMessage]]:
     """
     Executes a single conversational turn through the LangGraph agent.
@@ -140,10 +150,11 @@ def run_agent(
     :param app: Pre-compiled LangGraph application (uses default if None).
     :param model: Ollama model name.
     :param base_url: Ollama API endpoint.
+    :param num_predict: Optional token limit cap for response generation.
     :return: (assistant_response_text, updated_message_history)
     """
     if app is None:
-        app = get_default_agent_app(model=model, base_url=base_url)
+        app = get_default_agent_app(model=model, base_url=base_url, num_predict=num_predict)
 
     current_messages: List[BaseMessage] = list(history) if history else []
     current_messages.append(HumanMessage(content=user_input))

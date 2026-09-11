@@ -28,13 +28,14 @@ from src.agent.graph import (
 )
 
 
-def print_banner(model: str, base_url: str) -> None:
+def print_banner(model: str, base_url: str, max_tokens: int) -> None:
     """Prints a styled startup banner with session information."""
     print("\n" + "=" * 75)
     print(" LOCAL JARVIS - INTERACTIVE CLI (PHASE 3: THE BRAIN)")
     print("=" * 75)
     print(f" LLM Model:       {model}")
     print(f" Ollama URL:      {base_url}")
+    print(f" Max Tokens:      {max_tokens} (Ollama num_predict ceiling)")
     print(" Hardware Target: NVIDIA RTX 3050 (6GB) - GPU Acceleration")
     print(" Commands:")
     print("   'exit' or 'quit' -> Exit the chat loop")
@@ -46,13 +47,19 @@ def chat_loop(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     temperature: float = DEFAULT_TEMPERATURE,
+    max_tokens: int = 150,
 ) -> None:
     """Main interactive chat loop."""
-    print_banner(model, base_url)
+    print_banner(model, base_url, max_tokens)
 
     print("Initializing LangGraph workflow...")
     try:
-        app = build_graph(model=model, base_url=base_url, temperature=temperature)
+        app = build_graph(
+            model=model,
+            base_url=base_url,
+            temperature=temperature,
+            num_predict=max_tokens,
+        )
         print("LangGraph agent compiled and ready.\n")
     except Exception as e:
         print(f"Error initializing LangGraph with Ollama: {e}", file=sys.stderr)
@@ -100,7 +107,7 @@ def chat_loop(
             print(" " * 30, end="\r", flush=True)
 
             print(f"Jarvis > {response_text}\n")
-            print(f"         [Latency: {latency:.3f}s | Turn: #{turn_count} | GPU: RTX 3050]\n")
+            print(f"         [Latency: {latency:.3f}s | Turn: #{turn_count} | GPU: RTX 3050 | MaxTokens: {max_tokens}]\n")
         except Exception as err:
             latency = time.perf_counter() - start_time
             print(" " * 30, end="\r", flush=True)
@@ -133,12 +140,19 @@ def main():
         default=DEFAULT_TEMPERATURE,
         help=f"LLM sampling temperature (default: {DEFAULT_TEMPERATURE})",
     )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=150,
+        help="Maximum tokens to predict / num_predict ceiling (default: 150)",
+    )
     args = parser.parse_args()
 
     chat_loop(
         model=args.model,
         base_url=args.base_url,
         temperature=args.temperature,
+        max_tokens=args.max_tokens,
     )
 
 
