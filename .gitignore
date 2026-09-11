@@ -1,0 +1,49 @@
+# Python Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environment Variables & Secrets
+.env
+.env.local
+*.secret
+
+# Audio recordings & temporary audio cache
+*.wav
+*.mp3
+*.flac
+*.ogg
+audio_cache/
+
+# Machine Learning Models & Weights
+models/
+*.onnx
+*.bin
+*.pt
+*.safetensors
+
+# Vector Store / Memory
+chroma_db/
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Analysis & Notebooks
+.ipynb_checkpoints/
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/

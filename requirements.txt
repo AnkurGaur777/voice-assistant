@@ -1,0 +1,40 @@
+# ==============================================================================
+# Local Jarvis - Python Dependencies
+# ==============================================================================
+
+# --- Phase 1: Audio Capture & Wake Word ---
+sounddevice>=0.4.6
+numpy>=1.26.0
+scipy>=1.11.0
+openwakeword
+onnxruntime
+
+# --- Phase 2: Speech-to-Text (STT) ---
+faster-whisper
+
+# --- Phase 3: Brain & LLM Orchestration ---
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-community>=0.3.0
+langchain-ollama>=0.2.0
+requests>=2.31.0
+
+# --- Phase 4: Task Automation Tools ---
+pyperclip>=1.8.2
+pyautogui>=0.9.54
+duckduckgo-search>=6.0.0
+
+# --- Phase 5: Text-to-Speech (TTS) ---
+# Placeholder: Piper (piper-tts) or Kokoro (kokoro-onnx) - to be selected in Phase 5
+
+# --- Phase 6: Local Vector Memory ---
+chromadb>=0.5.0
+
+# --- Phase 7: System Tray & UI ---
+pystray>=0.19.5
+pillow>=10.0.0
+
+# --- Phase 8: Data Science & Performance Evaluation ---
+pandas>=2.2.0
+matplotlib>=3.8.0
+seaborn>=0.13.0

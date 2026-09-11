@@ -1,0 +1,21 @@
+# ==============================================================================
+# Local Jarvis - Infrastructure Services
+# ==============================================================================
+# NOTE: Ollama runs natively on Windows at http://localhost:11434 (not in Docker),
+# which allows direct access to the NVIDIA RTX 3050 GPU without WSL2 Docker GPU pass-through overhead.
+#
+# SearXNG is containerized below as a self-hosted metasearch engine to provide
+# private, free, and local web search capabilities for the Jarvis agent.
+# ==============================================================================
+
+services:
+  searxng:
+    container_name: local-jarvis-searxng
+    image: searxng/searxng:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    environment:
+      - SEARXNG_BASE_URL=http://localhost:8080/
+    restart: unless-stopped
