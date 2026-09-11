@@ -99,10 +99,12 @@ def chat_loop(
                 app=app,
                 model=model,
                 base_url=base_url,
+                temperature=temperature,
+                num_predict=max_tokens,
             )
             latency = time.perf_counter() - start_time
             print(f"Jarvis > {response_text}\n")
-            print(f"         [Latency: {latency:.3f}s | Turn: #{turn_count} | GPU: RTX 3050 | MaxTokens: {max_tokens}]\n")
+            print(f"         [Latency: {latency:.3f}s | Turn: #{turn_count} | GPU: RTX 3050 | Model: {model} | MaxTokens: {max_tokens}]\n")
         except Exception as err:
             latency = time.perf_counter() - start_time
             print(f"\n[Error during inference: {err}]", file=sys.stderr)
