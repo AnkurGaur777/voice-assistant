@@ -31,11 +31,12 @@ from src.agent.graph import (
 def print_banner(model: str, base_url: str, max_tokens: int) -> None:
     """Prints a styled startup banner with session information."""
     print("\n" + "=" * 75)
-    print(" LOCAL JARVIS - INTERACTIVE CLI (PHASE 3: THE BRAIN)")
+    print(" LOCAL JARVIS - INTERACTIVE CLI (PHASE 4a: WEB SEARCH INTEGRATION)")
     print("=" * 75)
     print(f" LLM Model:       {model}")
     print(f" Ollama URL:      {base_url}")
     print(f" Max Tokens:      {max_tokens} (Ollama num_predict ceiling)")
+    print(" Tools Active:    web_search (SearXNG @ http://localhost:8080)")
     print(" Hardware Target: NVIDIA RTX 3050 (6GB) - GPU Acceleration")
     print(" Commands:")
     print("   'exit' or 'quit' -> Exit the chat loop")
@@ -111,9 +112,44 @@ def chat_loop(
             print(f"Make sure Ollama is responding at {base_url}.\n", file=sys.stderr)
 
 
+def run_single_query(
+    query: str,
+    model: str = DEFAULT_MODEL,
+    base_url: str = DEFAULT_BASE_URL,
+    temperature: float = DEFAULT_TEMPERATURE,
+    max_tokens: int = 150,
+) -> None:
+    """Executes a single test query and prints the response and timing."""
+    print(f"\n--- Testing Single Query with Model '{model}' ---")
+    print(f"Query: {query}\n")
+    start_time = time.perf_counter()
+    try:
+        response_text, _ = run_agent(
+            user_input=query,
+            model=model,
+            base_url=base_url,
+            temperature=temperature,
+            num_predict=max_tokens,
+        )
+        latency = time.perf_counter() - start_time
+        print(f"\nJarvis > {response_text}\n")
+        print(f"[Latency: {latency:.3f}s | Model: {model} | MaxTokens: {max_tokens}]\n")
+    except Exception as err:
+        latency = time.perf_counter() - start_time
+        print(f"[Error during query: {err}]", file=sys.stderr)
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Local Jarvis - Interactive LangGraph Chat CLI (Phase 3)"
+        description="Local Jarvis - Interactive LangGraph Chat CLI (Phase 4a: Web Search)"
+    )
+    parser.add_argument(
+        "--query",
+        "-q",
+        type=str,
+        default=None,
+        help="Optional single query to run without entering interactive chat loop",
     )
     parser.add_argument(
         "--model",
@@ -144,12 +180,21 @@ def main():
     )
     args = parser.parse_args()
 
-    chat_loop(
-        model=args.model,
-        base_url=args.base_url,
-        temperature=args.temperature,
-        max_tokens=args.max_tokens,
-    )
+    if args.query:
+        run_single_query(
+            query=args.query,
+            model=args.model,
+            base_url=args.base_url,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+        )
+    else:
+        chat_loop(
+            model=args.model,
+            base_url=args.base_url,
+            temperature=args.temperature,
+            max_tokens=args.max_tokens,
+        )
 
 
 if __name__ == "__main__":
