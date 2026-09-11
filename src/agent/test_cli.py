@@ -36,7 +36,7 @@ def print_banner(model: str, base_url: str, max_tokens: int) -> None:
     print(f" LLM Model:       {model}")
     print(f" Ollama URL:      {base_url}")
     print(f" Max Tokens:      {max_tokens} (Ollama num_predict ceiling)")
-    print(" Tools Active:    web_search (SearXNG @ http://localhost:8080)")
+    print(" Tools Active:    get_current_datetime (System Clock), web_search (SearXNG)")
     print(" Hardware Target: NVIDIA RTX 3050 (6GB) - GPU Acceleration")
     print(" Commands:")
     print("   'exit' or 'quit' -> Exit the chat loop")

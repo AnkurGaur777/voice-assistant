@@ -19,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from src.agent.tools.datetime_tool import get_current_datetime
 from src.agent.tools.web_search import web_search
 
 # --- Default Configuration ---
@@ -26,13 +27,15 @@ DEFAULT_MODEL = "llama3.2:3b"
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_KEEP_ALIVE = "30m"
-DEFAULT_TOOLS = [web_search]
+DEFAULT_TOOLS = [get_current_datetime, web_search]
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, a fast, capable, and intelligent local voice assistant. "
-    "You have access to a web_search tool to query the web for real-time, live, or current information. "
-    "When asked about current events, today's date, current time, the latest news, weather, "
-    "live status, or information beyond your training cutoff, invoke the web_search tool. "
+    "You have access to the following tools: "
+    "1. `get_current_datetime`: Call this tool for any questions regarding the current date, time, "
+    "day of the week, month, or year. Always use get_current_datetime (never web_search) for date or time queries. "
+    "2. `web_search`: Call this tool to look up live external information, such as breaking news, weather, "
+    "sports scores, or events beyond your training data. "
     "Keep your final responses concise, natural, and conversational — suitable for being spoken aloud, "
     "ideally under ~40 words unless the user explicitly asks for detail, an explanation, or a list. "
     "Avoid markdown formatting, headers, or bullet points unless specifically requested."
