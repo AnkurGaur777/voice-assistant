@@ -2,3 +2,9 @@ timestamp,model_name,device,compute_type,cpu_threads,audio_file,audio_duration_s
 2026-09-11 23:26:41,tiny,cpu,int8,4,clip_20260911_185651_757.wav,5.36,1.941,0.626,0.117,can you send it to me?
 2026-09-11 23:26:44,base,cpu,int8,4,clip_20260911_185651_757.wav,5.36,0.989,1.692,0.316,list.  Can you listen to me?
 2026-09-11 23:27:24,small,cpu,int8,4,clip_20260911_185651_757.wav,5.36,37.215,2.73,0.509,Can you listen to me?
+2026-09-11 23:30:35,tiny,cpu,int8,4,clip_20260911_185746_8.wav,5.92,1.534,0.454,0.077,of this. Who is the President of India?
+2026-09-11 23:30:36,base,cpu,int8,4,clip_20260911_185746_8.wav,5.92,0.815,0.814,0.137,"at this, who is the president of India."
+2026-09-11 23:30:40,small,cpu,int8,4,clip_20260911_185746_8.wav,5.92,1.922,2.084,0.352,this was the president of India
+2026-09-11 23:33:49,tiny,cpu,int8,4,clip_20260911_185746_8.wav,5.92,1.674,0.575,0.097,Who is the President of India?
+2026-09-11 23:33:51,base,cpu,int8,4,clip_20260911_185746_8.wav,5.92,1.269,1.147,0.194,Who is the president of India.
+2026-09-11 23:33:58,small,cpu,int8,4,clip_20260911_185746_8.wav,5.92,2.74,3.412,0.576,this was the president of India

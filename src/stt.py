@@ -8,6 +8,7 @@ the dedicated GPU remains entirely available for local LLM inference (e.g. Llama
 
 import argparse
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -25,6 +26,35 @@ DEFAULT_AUDIO_CACHE_DIR = BASE_DIR / "audio_cache"
 
 # Module-level transcriber cache for lazy singleton reuse across pipeline turns
 _TRANSCRIBER_CACHE: Dict[str, "WhisperTranscriber"] = {}
+
+
+def clean_transcription(text: str) -> str:
+    """
+    Post-processing step that strips leading short hallucinated fragments
+    (under ~15 characters followed by a period, comma, or punctuation)
+    that commonly appear as Whisper artifacts on short clips (e.g. 'at this,', 'of this.').
+
+    :param text: Raw transcribed text from Whisper.
+    :return: Cleaned text with leading artifacts removed.
+    """
+    if not text:
+        return ""
+
+    cleaned = text.strip()
+
+    # Guard loop for up to 2 chained artifact fragments
+    for _ in range(2):
+        match = re.match(r"^([^.,;!?]{1,15}[.,;!?])\s+(.+)$", cleaned)
+        if match:
+            fragment, remainder = match.group(1), match.group(2).strip()
+            if remainder:
+                cleaned = remainder[0].upper() + remainder[1:] if len(remainder) > 1 else remainder.upper()
+            else:
+                break
+        else:
+            break
+
+    return cleaned
 
 
 class WhisperTranscriber:
@@ -86,7 +116,7 @@ class WhisperTranscriber:
         :param language: Spoken language code (e.g., 'en' for English, None for auto-detect).
         :param beam_size: Beam search size for decoding (default: 5).
         :param vad_filter: Enable faster-whisper internal VAD filtering if needed.
-        :return: Transcribed text as a single stripped string.
+        :return: Transcribed text as a single stripped string with artifact cleanup.
         """
         path = Path(audio_path).resolve()
         if not path.is_file():
@@ -109,7 +139,8 @@ class WhisperTranscriber:
         transcription_parts = [segment.text for segment in segments]
         transcribed_text = " ".join(transcription_parts).strip()
 
-        return transcribed_text
+        # Post-processing: strip leading short artifact fragments
+        return clean_transcription(transcribed_text)
 
 
 def get_transcriber(
