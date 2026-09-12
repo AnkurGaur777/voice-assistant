@@ -38,6 +38,7 @@ from src.agent.tools.desktop import (
     open_application,
     type_text,
 )
+from src.agent.tools.reminders import list_reminders, set_reminder
 from src.agent.tools.sandbox import run_python
 from src.agent.tools.web_search import web_search
 from src.agent.graph import run_agent
@@ -424,6 +425,30 @@ def test_direct_sandbox_calculation() -> bool:
     return True
 
 
+def test_direct_reminders() -> bool:
+    """Tests direct execution of set_reminder and list_reminders tools."""
+    print("=" * 70)
+    print(" STEP 12: Direct Reminders Tool Test (SQLite Persistence)")
+    print("=" * 70)
+
+    # 1. Set a reminder
+    set_res = set_reminder.invoke({"text": "Test verification task", "when": "in 15 minutes"})
+    print(f"set_reminder result: {set_res}")
+    if "Reminder set:" not in set_res or "Test verification task" not in set_res:
+        print("FAIL: set_reminder did not return expected confirmation.")
+        return False
+    print("PASS: set_reminder stored task and returned confirmation!")
+
+    # 2. List reminders
+    list_res = list_reminders.invoke({})
+    print(f"\nlist_reminders result:\n{list_res}\n")
+    if "Test verification task" not in list_res:
+        print("FAIL: list_reminders did not contain the stored task.")
+        return False
+    print("PASS: list_reminders retrieved the pending task successfully!\n")
+    return True
+
+
 def test_agent_desktop_routing() -> bool:
     """Tests agent routing when user asks to open an application."""
     print("=" * 70)
@@ -558,6 +583,10 @@ def main():
 
     sandbox_ok = test_direct_sandbox_calculation()
     if not sandbox_ok:
+        sys.exit(1)
+
+    reminders_ok = test_direct_reminders()
+    if not reminders_ok:
         sys.exit(1)
 
     agent_dt_ok = test_agent_datetime_invocation()
