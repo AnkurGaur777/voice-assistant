@@ -100,7 +100,7 @@ def store_exchange(
     # Do not persist ephemeral real-time datetime queries into permanent vector memory
     # Storing answers to "what time is it" poisons memory with stale timestamps
     ephemeral_time_queries = [
-        "what time is it",
+        "what time",
         "what's the time",
         "what is the time",
         "current time",
@@ -110,6 +110,12 @@ def store_exchange(
         "what's today's date",
         "what is the date",
         "what's the date",
+        "date of today",
+        "tell me the date",
+        "tell me the time",
+        "current date",
+        "date today",
+        "what day is today",
     ]
     if any(q in lower_user for q in ephemeral_time_queries):
         return None
@@ -165,6 +171,13 @@ def store_exchange(
         "[sandbox]",
         "[system clock]",
         "[reminders]",
+        '{"name":',
+        '"parameters":',
+        '"arguments":',
+        "i'll call the",
+        "i will call the",
+        "calling the tool",
+        "call the `",
     ]
     if any(pattern in lower_resp for pattern in corrupted_patterns):
         return None
@@ -326,6 +339,13 @@ def _sanitize_assistant_text(text: str) -> str:
         "cannot find",
         "could not find",
         "unable to find",
+        '{"name":',
+        '"parameters":',
+        '"arguments":',
+        "i'll call the",
+        "i will call the",
+        "calling the tool",
+        "call the `",
     ]
     if any(snippet in lower for snippet in unpersisted_snippets):
         return ""
