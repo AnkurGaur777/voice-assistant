@@ -47,8 +47,9 @@ def get_clipboard_text(max_chars: int = DEFAULT_MAX_CLIPBOARD_CHARS) -> str:
 def read_clipboard() -> str:
     """Read the current text content from the system clipboard.
 
-    Use this tool whenever the user asks 'what's on my clipboard', 'read my clipboard',
-    wants to inspect or check copied text, or asks specific questions about the copied content.
+    Use this tool ONLY when the user explicitly asks to read the clipboard, check what is copied,
+    or asks 'what is on my clipboard' or 'read my clipboard'. Never call this tool for general
+    questions, conversational chat, or personal preferences.
     """
     print("[Clipboard Tool] Reading system clipboard...")
     return get_clipboard_text()
@@ -58,9 +59,9 @@ def read_clipboard() -> str:
 def summarize_clipboard(focus: Optional[str] = None) -> str:
     """Read the system clipboard and return its content formatted for summarization.
 
-    Use this tool whenever the user asks to summarize, give an overview, or highlight key
-    points of text currently copied to the clipboard (e.g. 'summarize my clipboard',
-    'give me the gist of what I copied', 'summarize this article from my clipboard').
+    Use this tool ONLY when the user explicitly asks to summarize or give an overview of
+    text currently copied to the clipboard (e.g. 'summarize my clipboard', 'summarize what I copied').
+    Never call this tool for general questions or personal preferences.
 
     Args:
         focus: Optional specific topic or aspect the user wants the summary to focus on.

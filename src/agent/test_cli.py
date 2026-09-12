@@ -29,19 +29,21 @@ from src.agent.graph import (
 from src.agent.tools.reminders import start_reminder_scheduler
 
 
-def print_banner(model: str, base_url: str, max_tokens: int) -> None:
+def print_banner(model: str, base_url: str, max_tokens: int, enable_memory: bool = True) -> None:
     """Prints a styled startup banner with session information."""
     print("\n" + "=" * 75)
-    print(" LOCAL JARVIS - INTERACTIVE CLI (PHASE 4: AGENT TOOLS & REMINDERS)")
+    print(" LOCAL JARVIS - INTERACTIVE CLI (PHASE 6: VECTOR MEMORY & AGENT TOOLS)")
     print("=" * 75)
     print(f" LLM Model:       {model}")
     print(f" Ollama URL:      {base_url}")
     print(f" Max Tokens:      {max_tokens} (Ollama num_predict ceiling)")
     print(" Tools Active:    get_current_datetime, web_search, read_clipboard, summarize_clipboard, open_application, type_text, run_python, set_reminder, list_reminders")
+    mem_status = "ChromaDB (all-MiniLM-L6-v2, CPU) -> chroma_db/" if enable_memory else "Disabled"
+    print(f" Vector Memory:   {mem_status}")
     print(" Hardware Target: NVIDIA RTX 3050 (6GB) - GPU Acceleration")
     print(" Commands:")
     print("   'exit' or 'quit' -> Exit the chat loop")
-    print("   'clear'          -> Clear conversation context memory")
+    print("   'clear'          -> Clear conversation session history (persistent memory preserved)")
     print("=" * 75 + "\n")
 
 
@@ -50,9 +52,10 @@ def chat_loop(
     base_url: str = DEFAULT_BASE_URL,
     temperature: float = DEFAULT_TEMPERATURE,
     max_tokens: int = 150,
+    enable_memory: bool = True,
 ) -> None:
     """Main interactive chat loop."""
-    print_banner(model, base_url, max_tokens)
+    print_banner(model, base_url, max_tokens, enable_memory=enable_memory)
 
     # Launch the background reminder scheduler daemon thread
     scheduler = start_reminder_scheduler(interval=10.0)
@@ -64,6 +67,7 @@ def chat_loop(
             base_url=base_url,
             temperature=temperature,
             num_predict=max_tokens,
+            enable_memory=enable_memory,
         )
         print("LangGraph agent compiled and ready.\n")
     except Exception as e:
@@ -126,6 +130,7 @@ def run_single_query(
     base_url: str = DEFAULT_BASE_URL,
     temperature: float = DEFAULT_TEMPERATURE,
     max_tokens: int = 150,
+    enable_memory: bool = True,
 ) -> None:
     """Executes a single test query and prints the response and timing."""
     print(f"\n--- Testing Single Query with Model '{model}' ---")
@@ -138,6 +143,7 @@ def run_single_query(
             base_url=base_url,
             temperature=temperature,
             num_predict=max_tokens,
+            enable_memory=enable_memory,
         )
         latency = time.perf_counter() - start_time
         print(f"\nJarvis > {response_text}\n")
@@ -150,7 +156,7 @@ def run_single_query(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Local Jarvis - Interactive LangGraph Chat CLI (Phase 4a: Web Search)"
+        description="Local Jarvis - Interactive LangGraph Chat CLI (Phase 6: Vector Memory)"
     )
     parser.add_argument(
         "--query",
@@ -186,7 +192,14 @@ def main():
         default=150,
         help="Maximum tokens to predict / num_predict ceiling (default: 150)",
     )
+    parser.add_argument(
+        "--no-memory",
+        action="store_true",
+        help="Disable persistent vector memory retrieval and storage",
+    )
     args = parser.parse_args()
+
+    enable_memory = not args.no_memory
 
     if args.query:
         run_single_query(
@@ -195,6 +208,7 @@ def main():
             base_url=args.base_url,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
+            enable_memory=enable_memory,
         )
     else:
         chat_loop(
@@ -202,6 +216,7 @@ def main():
             base_url=args.base_url,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
+            enable_memory=enable_memory,
         )
 
 
