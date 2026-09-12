@@ -95,11 +95,12 @@ def search_searxng(
 
 @tool
 def web_search(query: str) -> str:
-    """Search the web for live, current, or real-time information.
+    """Search the web for live, external, or real-time information.
 
-    Use this tool whenever the user asks about current events, today's date or time,
-    the latest news, weather, sports scores, recent technical documentation, stock prices,
-    or any factual information that may have changed after your knowledge cutoff.
+    Use this tool ONLY when the user asks to search the web or look up live external
+    information on the internet (such as latest news, weather, sports scores, public web facts).
+    NEVER call this tool for questions about the user, user preferences, past conversations,
+    or private details.
 
     Args:
         query: The search term or keywords to query the search engine with.

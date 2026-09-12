@@ -448,9 +448,10 @@ def stop_reminder_scheduler() -> None:
 def set_reminder(text: str, when: str) -> str:
     """Set a future reminder for a task, event, or alert.
 
-    Use this tool whenever the user asks to be reminded of something, schedule a reminder,
-    or alert them in the future (e.g. 'remind me to check the oven in 10 minutes',
+    Use this tool ONLY when the user explicitly asks to be reminded of something, schedule a reminder,
+    or set a reminder at a future time (e.g. 'remind me to check the oven in 10 minutes',
     'set a reminder to call mom at 5pm', 'remind me tomorrow at 9am to submit taxes').
+    Never call this tool for general questions, conversational queries, past facts, or personal preferences.
 
     Args:
         text: The reminder message or task to remember (e.g. 'check the oven', 'call mom').
@@ -474,8 +475,9 @@ def set_reminder(text: str, when: str) -> str:
 def list_reminders() -> str:
     """List all current pending reminders that have not yet triggered.
 
-    Use this tool whenever the user asks to see, check, or list their reminders
+    Use this tool ONLY when the user explicitly asks to see, check, or list their reminders
     (e.g. 'what are my reminders', 'show my reminders', 'do I have any upcoming reminders').
+    Never call this tool for general questions or personal preferences.
     """
     reminders = get_pending_reminders()
     if not reminders:

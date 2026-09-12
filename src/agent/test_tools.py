@@ -106,6 +106,7 @@ def test_agent_datetime_invocation() -> bool:
         model="llama3.2:3b",
         temperature=0.2,
         num_predict=120,
+        enable_memory=False,
     )
     total_elapsed = time.perf_counter() - start
 
@@ -261,6 +262,7 @@ def test_agent_clipboard_invocation() -> bool:
             model="llama3.2:3b",
             temperature=0.2,
             num_predict=120,
+            enable_memory=False,
         )
         total_elapsed = time.perf_counter() - start
 
@@ -463,6 +465,7 @@ def test_agent_desktop_routing() -> bool:
         model="llama3.2:3b",
         temperature=0.2,
         num_predict=120,
+        enable_memory=False,
     )
     total_elapsed = time.perf_counter() - start
 
@@ -505,6 +508,7 @@ def test_agent_type_text_extraction_and_reporting() -> bool:
             model="llama3.2:3b",
             temperature=0.2,
             num_predict=120,
+            enable_memory=False,
         )
         total_elapsed = time.perf_counter() - start
 
