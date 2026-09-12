@@ -252,6 +252,63 @@ INTER_SENTENCE_PAUSE_SECONDS = 0.15      # 150ms natural pause between sentences
 END_OF_SPEECH_PADDING_SECONDS = 0.25     # 250ms flush padding so last syllables are never clipped
 
 
+def sanitize_speech_text(text: str) -> str:
+    """
+    Cleans and filters text intended for TTS playback to ensure that:
+    1. Raw JSON tool calls {"name": "...", "parameters": ...} are stripped.
+    2. Tool narration boilerplate ("I'll call the `web_search` tool...", "Calling `run_python`...") is removed.
+    3. Markdown code blocks, backticks, and raw tool syntax are cleaned.
+    4. Malformed tool outputs are not spoken aloud as raw code or symbols.
+    """
+    if not text or not text.strip():
+        return ""
+
+    cleaned = text.strip()
+
+    # Strip code fences containing json or tool syntax
+    cleaned = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", "", cleaned, flags=re.DOTALL)
+
+    # Strip raw JSON function calls: {"name": ..., "parameters": ...} or {"name": ..., "arguments": ...}
+    cleaned = re.sub(
+        r'\{[^{}]*"name"\s*:\s*"[^"]+"\s*,\s*"(?:parameters|arguments|args)"\s*:\s*\{[^{}]*\}[^{}]*\}',
+        "",
+        cleaned,
+        flags=re.DOTALL,
+    )
+
+    # Strip narration boilerplate like:
+    # "To calculate 358% of 340, I'll call the `web_search` tool."
+    # "I will call the run_python tool to calculate this."
+    cleaned = re.sub(
+        r"(?:To (?:calculate|search|find|check|run) [^,.]*,\s*)?I(?:'ll| will)\s+(?:call|use|run|execute)\s+the\s+[`'\"]?\w+[`'\"]?\s+tool\.?",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    cleaned = re.sub(
+        r"(?:Calling|Running|Using)\s+(?:the\s+)?(?:tool\s+)?[`'\"]?\w+[`'\"]?\s*(?:tool)?\.?\.\.?",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+
+    # Strip tool logging tags
+    cleaned = re.sub(
+        r"\[(Tool Invoked|Clipboard|Desktop Automation|System Clock|Sandbox|Reminders|Memory|Ollama)[^\]]*\]\s*",
+        "",
+        cleaned,
+    )
+
+    # Strip remaining backticks
+    cleaned = cleaned.replace("`", "")
+
+    # Clean redundant whitespace and punctuation
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    cleaned = re.sub(r"^[:\-\s]+", "", cleaned).strip()
+
+    return cleaned
+
+
 def speak(
     text: str,
     voice: str = DEFAULT_VOICE,
@@ -277,12 +334,14 @@ def speak(
         on_start_playback: Optional callback invoked with the Time-to-First-Audio (TTFA)
             in seconds when playback actually starts.
     """
-    if not text or not text.strip():
+    clean_text = sanitize_speech_text(text)
+    if not clean_text:
+        print("[TTS] Text contained only raw tool syntax or was empty after sanitization; skipping speech playback.")
         return
 
     def _execute_speak():
         piper_voice = get_piper_voice(voice)
-        sentences = split_into_sentences(text)
+        sentences = split_into_sentences(clean_text)
         if not sentences:
             return
 

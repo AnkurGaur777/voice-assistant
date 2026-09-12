@@ -99,10 +99,24 @@ def web_search(query: str) -> str:
 
     Use this tool ONLY when the user asks to search the web or look up live external
     information on the internet (such as latest news, weather, sports scores, public web facts).
-    NEVER call this tool for questions about the user, user preferences, past conversations,
-    or private details.
+    NEVER call this tool for:
+    - Math, arithmetic, percentages, or numerical calculations (use run_python instead).
+    - Questions about the user, user preferences, past conversations, or private details.
 
     Args:
         query: The search term or keywords to query the search engine with.
     """
+    clean_q = (query or "").strip().lower()
+    # Guard: If query is purely a percentage or arithmetic calculation, delegate to sandbox
+    import re
+    if re.search(r"\d+\s*(?:%|percent)\s*of\s*\d+", clean_q) or re.search(r"^\d+\s*[\+\-\*\/]\s*\d+", clean_q):
+        from src.agent.tools.sandbox import run_python
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:%|percent)\s*of\s*(\d+(?:\.\d+)?)", clean_q)
+        if m:
+            pct = float(m.group(1)) / 100.0
+            val = float(m.group(2))
+            return run_python.invoke({"code": f"{val} * {pct}"})
+        else:
+            return run_python.invoke({"code": clean_q})
+
     return search_searxng(query=query, max_results=DEFAULT_MAX_RESULTS)

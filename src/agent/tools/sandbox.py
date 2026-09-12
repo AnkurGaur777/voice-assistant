@@ -288,10 +288,11 @@ def execute_in_sandbox(
 
 @tool
 def run_python(code: str) -> str:
-    """Execute Python code in a secure sandbox for quick calculations and math queries.
+    """Execute Python code in a secure sandbox for mathematical calculations, arithmetic, and percentages.
 
     Use this tool whenever you need to:
-    - Perform mathematical calculations (e.g. "what's 15% of 340", compound interest, square roots).
+    - Calculate percentages (e.g. "what is 358% of 340" -> code: '340 * 3.58', "15% of 80" -> code: '80 * 0.15').
+    - Perform mathematical calculations and arithmetic (e.g. addition, multiplication, division, powers, square roots).
     - Evaluate numerical expressions, statistics, or unit conversions.
     - Format strings or perform programmatic transformations.
 
@@ -303,7 +304,7 @@ def run_python(code: str) -> str:
     known limitation for personal local use.
 
     Args:
-        code: Python source code or expression to execute (e.g. '340 * 0.15' or 'import math; math.sqrt(144)').
+        code: Python source code or expression to execute (e.g. '340 * 3.58' or 'import math; math.sqrt(144)').
     """
     print(f"[Sandbox] Executing code: {code!r}")
     result = execute_in_sandbox(code)

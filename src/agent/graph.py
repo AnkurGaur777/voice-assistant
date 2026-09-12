@@ -9,9 +9,12 @@ Architecture:
   (Designed as a modular, extensible foundation ready for tool_node integration in Phase 4)
 """
 
+import json
 import os
+import re
 import sys
 from typing import Annotated, Any, Dict, List, Optional, Sequence, Tuple, TypedDict
+import uuid
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableBinding
@@ -31,6 +34,7 @@ from src.agent.memory import (
     retrieve_relevant_context,
     store_exchange,
 )
+from src.tts import sanitize_speech_text
 
 # --- Default Configuration ---
 DEFAULT_MODEL = "llama3.2:3b"
@@ -55,6 +59,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "User: \"my favorite color is blue\"\n"
     "Assistant: \"Got it, I'll remember that!\" (plain conversational acknowledgment, NO tool call)\n\n"
     "CRITICAL CONVERSATIONAL & TOOL CALLING RULES:\n"
+    "- DATE & TIME QUESTIONS: ALWAYS call the `get_current_datetime` tool for any questions asking for the current date, today's date, current time, day of the week, month, or year (e.g. \"what's the date of today\", \"what time is it\", \"what day is today\"). You do not have an internal clock, so you MUST query `get_current_datetime` for real-time date and time. NEVER state that the date or time is not available or a dynamic value.\n"
+    "- MATHEMATICAL CALCULATIONS & PERCENTAGES: ALWAYS use the `run_python` tool to evaluate math, arithmetic, and percentages (e.g. \"what is 358% of 340\" -> invoke `run_python` with code '340 * 3.58'). NEVER call `web_search` for math, arithmetic, or percentage questions.\n"
     "- When the user makes a statement sharing personal information/preferences (not a question, not a request to DO something), "
     "respond conversationally acknowledging it (e.g. \"Got it, I'll remember that!\") and do NOT call any tool. "
     "Tools should only be called when the user is explicitly asking to perform an action (set a reminder, search, calculate, etc.), "
@@ -64,8 +70,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "Answer those directly in plain conversational English without calling any tools.\n"
     "- ONLY call a tool if the user's CURRENT query directly and explicitly requests that specific tool's capability.\n"
     "- When past conversation reference is provided, use that information directly to answer the user. Do NOT call tools to look up or verify past conversation information.\n"
-    "- FRESH TOOL RESULTS TAKE ABSOLUTE PRIORITY: When a tool is called in the current turn (such as get_current_datetime, web_search, run_python, set_reminder, etc.) and returns a result, you MUST answer the user using that fresh, live tool result. Fresh tool results ALWAYS override any past memory reference or previous conversation snippet. NEVER echo, substitute, or mix in past memory when a tool has just provided the fresh answer for the current query.\n\n"
+    "- FRESH TOOL RESULTS TAKE ABSOLUTE PRIORITY: When a tool is called in the current turn (such as get_current_datetime, web_search, run_python, set_reminder, etc.) and returns a result, you MUST answer the user using that fresh, live tool result. Fresh tool results ALWAYS override any past memory reference or previous conversation snippet. NEVER echo, substitute, or mix in past memory when a tool has just provided the fresh answer for the current query.\n"
+    "- NEVER NARRATE TOOL CALLS OR OUTPUT RAW JSON: NEVER output narration phrases like \"I'll call the `web_search` tool\" or \"I will run python\" and NEVER output raw JSON tool-calling blocks like {\"name\": ...} in your conversational text. To call a tool, invoke it through the tool calling interface directly. In your final text response to the user, speak naturally in plain conversational English without mentioning tool names, parameters, or code syntax.\n\n"
     "CRITICAL TOOL INSTRUCTIONS:\n"
+    "- `get_current_datetime`: Call this tool for any questions regarding the current date, time, day of the week, month, or year. Always use get_current_datetime (never web_search) for date or time queries.\n"
     "- When `type_text` is the tool executed: In your final response, you MUST state the EXACT window name reported in the tool result "
     "(e.g. if the tool result mentions 'Windows PowerShell', you must report 'Windows PowerShell'), "
     "even if the typing was cancelled, rejected, or aborted by the user (e.g. 'Typing was cancelled into Windows PowerShell'). "
@@ -115,6 +123,69 @@ def get_ollama_llm(
     )
 
 
+def extract_fallback_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """
+    Detects if the LLM outputted a tool call as raw JSON in plain text content
+    instead of structured tool_calls (common with smaller 3B models or when narrating).
+
+    Extracts the tool call dictionary and returns:
+    (cleaned_content, tool_calls_list)
+    """
+    if not content or not isinstance(content, str):
+        return content, []
+
+    tool_calls: List[Dict[str, Any]] = []
+    cleaned = content
+
+    pattern = r'\{[^{}]*"name"\s*:\s*"([^"]+)"\s*,\s*"(?:parameters|arguments|args)"\s*:\s*(\{[^{}]*\})[^{}]*\}'
+    matches = list(re.finditer(pattern, content, re.DOTALL))
+    for m in matches:
+        full_match = m.group(0)
+        tool_name = m.group(1).strip()
+        raw_args = m.group(2).strip()
+        try:
+            parsed_args = json.loads(raw_args)
+        except Exception:
+            try:
+                parsed_args = json.loads(raw_args.replace("'", '"'))
+            except Exception:
+                parsed_args = {}
+
+        # If web_search was called for math or percentage, redirect to run_python
+        if tool_name == "web_search":
+            q = str(parsed_args.get("query", "")).strip().lower()
+            pm = re.search(r"(\d+(?:\.\d+)?)\s*(?:%|percent)\s*of\s*(\d+(?:\.\d+)?)", q)
+            if pm:
+                pct = float(pm.group(1)) / 100.0
+                val = float(pm.group(2))
+                tool_name = "run_python"
+                parsed_args = {"code": f"{val} * {pct}"}
+            elif re.search(r"^\d+\s*[\+\-\*\/]\s*\d+", q):
+                tool_name = "run_python"
+                parsed_args = {"code": q}
+
+        tool_calls.append({
+            "name": tool_name,
+            "args": parsed_args,
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "tool_call",
+        })
+        cleaned = cleaned.replace(full_match, "").strip()
+
+    # Clean markdown fences around removed json
+    cleaned = re.sub(r"```(?:json)?\s*```", "", cleaned).strip()
+
+    # Clean narration boilerplate like "To calculate ..., I'll call the `web_search` tool."
+    cleaned = re.sub(
+        r"(?:To (?:calculate|search|find|check|run) [^,.]*,\s*)?I(?:'ll| will)\s+(?:call|use|run|execute)\s+the\s+[`'\"]?\w+[`'\"]?\s+tool\.?",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    return cleaned, tool_calls
+
+
 def create_llm_node(
     llm: Any,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
@@ -147,7 +218,19 @@ def create_llm_node(
         # Retrieve relevant past vector memory if enabled (only on initial decision turn, not on tool synthesis)
         effective_system_prompt = system_prompt
         past_exchanges: List[Dict[str, Any]] = []
-        if enable_memory and latest_user_query and not has_tool_result:
+
+        is_datetime_query = False
+        if latest_user_query:
+            clean_q = latest_user_query.strip().lower()
+            datetime_indicators = (
+                "what time", "what's the time", "current time", "time right now",
+                "what date", "what's the date", "current date", "today's date", "date of today",
+                "what day", "what's today", "day today", "date today",
+                "tell me the date", "tell me the time",
+            )
+            is_datetime_query = any(ind in clean_q for ind in datetime_indicators)
+
+        if enable_memory and latest_user_query and not has_tool_result and not is_datetime_query:
             past_exchanges = retrieve_relevant_context(
                 query=latest_user_query,
                 top_k=1,
@@ -189,7 +272,7 @@ def create_llm_node(
                 action_indicators = (
                     "remind", "reminder", "alarm", "schedule",
                     "search", "google", "look up", "find online", "news",
-                    "calculate", "compute", "math", "+", "-", "*", "/", "%",
+                    "calculate", "compute", "math", "+", "-", "*", "/", "%", "percent",
                     "open ", "launch ", "start ",
                     "type ", "enter ", "write ",
                     "clipboard", "copied",
@@ -229,10 +312,37 @@ def create_llm_node(
         has_tool_calls = bool(hasattr(response, "tool_calls") and response.tool_calls)
         if has_tool_calls:
             for tc in response.tool_calls:
+                # Math re-routing guard for native tool calls
+                if tc.get("name") == "web_search":
+                    raw_q = str(tc.get("args", {}).get("query", "")).strip().lower()
+                    pm = re.search(r"(\d+(?:\.\d+)?)\s*(?:%|percent)\s*of\s*(\d+(?:\.\d+)?)", raw_q)
+                    if pm:
+                        pct = float(pm.group(1)) / 100.0
+                        val = float(pm.group(2))
+                        tc["name"] = "run_python"
+                        tc["args"] = {"code": f"{val} * {pct}"}
+                    elif re.search(r"^\d+\s*[\+\-\*\/]\s*\d+", raw_q):
+                        tc["name"] = "run_python"
+                        tc["args"] = {"code": raw_q}
+
                 tool_name = tc.get("name", "unknown")
                 tool_args = tc.get("args", {})
                 print(f"[Tool Invoked by Agent] {tool_name}(args={tool_args})")
         else:
+            # Fallback: Detect if the model outputted a tool call as raw JSON text
+            if getattr(response, "content", None):
+                raw_content = str(response.content)
+                cleaned_content, fallback_tool_calls = extract_fallback_tool_calls(raw_content)
+                if fallback_tool_calls:
+                    response.tool_calls = fallback_tool_calls
+                    response.content = cleaned_content
+                    has_tool_calls = True
+                    for tc in response.tool_calls:
+                        tool_name = tc.get("name", "unknown")
+                        tool_args = tc.get("args", {})
+                        print(f"[Tool Invoked via Fallback Parser] {tool_name}(args={tool_args})")
+
+        if not has_tool_calls:
             # Final assistant response produced (no tool calls pending)
             # Store turn in vector memory
             if enable_memory and latest_user_query and getattr(response, "content", None):
@@ -414,7 +524,8 @@ def run_agent(
 
     # Extract latest AI message response
     last_message = all_messages[-1]
-    response_text = str(last_message.content) if last_message else ""
+    raw_response_text = str(last_message.content) if last_message else ""
+    response_text = sanitize_speech_text(raw_response_text)
 
     return response_text, all_messages
 

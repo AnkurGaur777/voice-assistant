@@ -14,6 +14,7 @@ import collections
 import os
 import queue
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable, Deque, List, Optional, Tuple
@@ -179,7 +180,7 @@ class WakeWordDetector:
     def __init__(
         self,
         model_dir: Path = BASE_MODEL_DIR,
-        threshold: float = 0.5,
+        threshold: float = 0.35,
         input_device: Optional[int] = None,
         debug: bool = False,
     ):
@@ -251,14 +252,16 @@ class WakeWordDetector:
 
     def listen_and_record(
         self,
-        on_wake_word_detected: Optional[Callable[[float], None]] = None
-    ) -> str:
+        on_wake_word_detected: Optional[Callable[[float], None]] = None,
+        stop_event: Optional[threading.Event] = None,
+    ) -> Optional[str]:
         """
         Listens for 'Hey Jarvis'. Once detected, records the user's utterance
         until ~1 second of silence, and saves it to a timestamped .wav file.
 
-        Returns:
-            str: Absolute file path to the saved .wav audio clip.
+        :param on_wake_word_detected: Optional callback invoked with the detection score.
+        :param stop_event: Optional threading.Event to signal graceful termination.
+        :return: Absolute file path to the saved .wav audio clip, or None if cancelled.
         """
         self.start_stream()
         self.oww_model.reset()
@@ -277,8 +280,10 @@ class WakeWordDetector:
         detected_score = 0.0
 
         while not wake_word_detected:
+            if stop_event is not None and stop_event.is_set():
+                return None
             try:
-                chunk = self.audio_queue.get(timeout=2.0)
+                chunk = self.audio_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
@@ -322,8 +327,10 @@ class WakeWordDetector:
         record_start_time = time.time()
 
         while True:
+            if stop_event is not None and stop_event.is_set():
+                return None
             try:
-                chunk = self.audio_queue.get(timeout=1.0)
+                chunk = self.audio_queue.get(timeout=0.5)
             except queue.Empty:
                 break
 
@@ -389,8 +396,8 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.5,
-        help="Wake-word detection confidence threshold between 0.0 and 1.0 (default: 0.5)."
+        default=0.35,
+        help="Wake-word detection confidence threshold between 0.0 and 1.0 (default: 0.35)."
     )
     parser.add_argument(
         "--debug",
