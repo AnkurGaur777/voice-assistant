@@ -6,6 +6,14 @@ from src.agent.tools.clipboard import (
     summarize_clipboard,
 )
 from src.agent.tools.datetime_tool import format_current_datetime, get_current_datetime
+from src.agent.tools.desktop import (
+    APP_ALIASES,
+    focus_window_by_name,
+    get_active_window_title,
+    launch_app,
+    open_application,
+    type_text,
+)
 from src.agent.tools.web_search import search_searxng, web_search
 
 __all__ = [
@@ -16,4 +24,11 @@ __all__ = [
     "read_clipboard",
     "summarize_clipboard",
     "get_clipboard_text",
+    "open_application",
+    "type_text",
+    "launch_app",
+    "get_active_window_title",
+    "focus_window_by_name",
+    "APP_ALIASES",
 ]
+
