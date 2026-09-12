@@ -19,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from src.agent.tools.clipboard import read_clipboard, summarize_clipboard
 from src.agent.tools.datetime_tool import get_current_datetime
 from src.agent.tools.web_search import web_search
 
@@ -27,7 +28,7 @@ DEFAULT_MODEL = "llama3.2:3b"
 DEFAULT_BASE_URL = "http://localhost:11434"
 DEFAULT_TEMPERATURE = 0.7
 DEFAULT_KEEP_ALIVE = "30m"
-DEFAULT_TOOLS = [get_current_datetime, web_search]
+DEFAULT_TOOLS = [get_current_datetime, web_search, read_clipboard, summarize_clipboard]
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, a fast, capable, and intelligent local voice assistant. "
@@ -36,6 +37,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "day of the week, month, or year. Always use get_current_datetime (never web_search) for date or time queries. "
     "2. `web_search`: Call this tool to look up live external information, such as breaking news, weather, "
     "sports scores, or events beyond your training data. "
+    "3. `read_clipboard`: Call this tool when the user asks to read, inspect, or check what is currently copied "
+    "to the system clipboard, or asks specific questions about copied text. "
+    "4. `summarize_clipboard`: Call this tool when the user asks to summarize, give an overview, or highlight "
+    "key points of text currently copied to the system clipboard. "
     "Keep your final responses concise, natural, and conversational — suitable for being spoken aloud, "
     "ideally under ~40 words unless the user explicitly asks for detail, an explanation, or a list. "
     "Avoid markdown formatting, headers, or bullet points unless specifically requested."

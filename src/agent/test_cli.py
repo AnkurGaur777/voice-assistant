@@ -31,12 +31,12 @@ from src.agent.graph import (
 def print_banner(model: str, base_url: str, max_tokens: int) -> None:
     """Prints a styled startup banner with session information."""
     print("\n" + "=" * 75)
-    print(" LOCAL JARVIS - INTERACTIVE CLI (PHASE 4a: WEB SEARCH INTEGRATION)")
+    print(" LOCAL JARVIS - INTERACTIVE CLI (PHASE 4b: TASK & CLIPBOARD TOOLS)")
     print("=" * 75)
     print(f" LLM Model:       {model}")
     print(f" Ollama URL:      {base_url}")
     print(f" Max Tokens:      {max_tokens} (Ollama num_predict ceiling)")
-    print(" Tools Active:    get_current_datetime (System Clock), web_search (SearXNG)")
+    print(" Tools Active:    get_current_datetime, web_search, read_clipboard, summarize_clipboard")
     print(" Hardware Target: NVIDIA RTX 3050 (6GB) - GPU Acceleration")
     print(" Commands:")
     print("   'exit' or 'quit' -> Exit the chat loop")
