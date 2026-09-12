@@ -14,6 +14,18 @@ from src.agent.tools.desktop import (
     open_application,
     type_text,
 )
+from src.agent.tools.reminders import (
+    ReminderScheduler,
+    add_reminder,
+    get_due_reminders,
+    get_pending_reminders,
+    list_reminders,
+    mark_reminder_completed,
+    parse_time_expression,
+    set_reminder,
+    start_reminder_scheduler,
+    stop_reminder_scheduler,
+)
 from src.agent.tools.sandbox import (
     execute_in_sandbox,
     run_python,
@@ -38,5 +50,15 @@ __all__ = [
     "run_python",
     "execute_in_sandbox",
     "validate_code_ast",
+    "set_reminder",
+    "list_reminders",
+    "start_reminder_scheduler",
+    "stop_reminder_scheduler",
+    "ReminderScheduler",
+    "parse_time_expression",
+    "add_reminder",
+    "get_pending_reminders",
+    "get_due_reminders",
+    "mark_reminder_completed",
 ]
 

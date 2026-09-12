@@ -29,8 +29,11 @@ models/
 *.pt
 *.safetensors
 
-# Vector Store / Memory
+# Databases & Vector Store
 chroma_db/
+reminders.db
+*.db
+*.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
 

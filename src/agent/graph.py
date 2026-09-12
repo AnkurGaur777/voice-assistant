@@ -22,6 +22,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from src.agent.tools.clipboard import read_clipboard, summarize_clipboard
 from src.agent.tools.datetime_tool import get_current_datetime
 from src.agent.tools.desktop import open_application, type_text
+from src.agent.tools.reminders import list_reminders, set_reminder
 from src.agent.tools.sandbox import run_python
 from src.agent.tools.web_search import web_search
 
@@ -38,6 +39,8 @@ DEFAULT_TOOLS = [
     open_application,
     type_text,
     run_python,
+    set_reminder,
+    list_reminders,
 ]
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -61,6 +64,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "NEVER assume, guess, or invent the window name (e.g. do NOT say 'Notepad' if the tool reported 'Windows PowerShell').\n"
     "7. `run_python`: Call this tool when the user asks to calculate, compute, solve math queries, or perform numerical operations "
     "(e.g. 'what is 15% of 340', 'calculate 25 * 48', square roots, conversions). Always use run_python for accurate mathematical calculations.\n"
+    "8. `set_reminder`: Call this tool when the user asks to set a reminder or be reminded of something at a future time "
+    "(e.g. 'remind me to check the oven in 10 minutes', 'set a reminder to call mom at 5pm', 'remind me tomorrow at 9am to submit report').\n"
+    "9. `list_reminders`: Call this tool when the user asks to see, view, or check their reminders "
+    "(e.g. 'what are my reminders', 'show my reminders', 'do I have any upcoming reminders').\n"
     "CRITICAL TOOL ERROR HANDLING RULES:\n"
     "- When a tool returns an error (starts with 'Error:'), you MUST identify the SPECIFIC error type and cause reported by the tool, and quote or closely paraphrase the exact reason. NEVER use a generic 'stopped for exceeding the time limit' explanation unless the error is ACTUALLY an execution timeout.\n"
     "  * Security / Restricted imports (e.g. 'Error: SecurityError: Importing ... is prohibited'): Explain that the code was blocked because it tried to import a restricted module or execute prohibited operations.\n"
