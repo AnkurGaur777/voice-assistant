@@ -22,6 +22,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from src.agent.tools.clipboard import read_clipboard, summarize_clipboard
 from src.agent.tools.datetime_tool import get_current_datetime
 from src.agent.tools.desktop import open_application, type_text
+from src.agent.tools.sandbox import run_python
 from src.agent.tools.web_search import web_search
 
 # --- Default Configuration ---
@@ -36,6 +37,7 @@ DEFAULT_TOOLS = [
     summarize_clipboard,
     open_application,
     type_text,
+    run_python,
 ]
 
 DEFAULT_SYSTEM_PROMPT = (
@@ -57,6 +59,14 @@ DEFAULT_SYSTEM_PROMPT = (
     "CRITICAL: In your final response, you MUST state the EXACT window name reported in the tool result "
     "(e.g. if the tool result mentions 'Windows PowerShell', you must report 'Windows PowerShell'). "
     "NEVER assume, guess, or invent the window name (e.g. do NOT say 'Notepad' if the tool reported 'Windows PowerShell').\n"
+    "7. `run_python`: Call this tool when the user asks to calculate, compute, solve math queries, or perform numerical operations "
+    "(e.g. 'what is 15% of 340', 'calculate 25 * 48', square roots, conversions). Always use run_python for accurate mathematical calculations.\n"
+    "CRITICAL TOOL ERROR HANDLING RULES:\n"
+    "- When a tool returns an error (starts with 'Error:'), you MUST identify the SPECIFIC error type and cause reported by the tool, and quote or closely paraphrase the exact reason. NEVER use a generic 'stopped for exceeding the time limit' explanation unless the error is ACTUALLY an execution timeout.\n"
+    "  * Security / Restricted imports (e.g. 'Error: SecurityError: Importing ... is prohibited'): Explain that the code was blocked because it tried to import a restricted module or execute prohibited operations.\n"
+    "  * Execution timeouts (e.g. 'Error: Execution timed out'): State that the code was stopped because it took too long and exceeded the time limit (never describe a timeout as intended or successful).\n"
+    "  * Syntax / Runtime exceptions (e.g. 'SyntaxError', 'ZeroDivisionError', 'PermissionError'): State the exact error (e.g. 'syntax error', 'division by zero', or 'filesystem access disabled').\n"
+    "- NEVER invent, fabricate, or hallucinate a plausible result when a tool fails or returns an error. Always truthfully report the specific failure reason.\n"
     "Keep your final responses concise, natural, and conversational — suitable for being spoken aloud, "
     "ideally under ~40 words unless the user explicitly asks for detail, an explanation, or a list. "
     "Avoid markdown formatting, headers, or bullet points unless specifically requested."

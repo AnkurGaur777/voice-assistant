@@ -36,7 +36,7 @@ def print_banner(model: str, base_url: str, max_tokens: int) -> None:
     print(f" LLM Model:       {model}")
     print(f" Ollama URL:      {base_url}")
     print(f" Max Tokens:      {max_tokens} (Ollama num_predict ceiling)")
-    print(" Tools Active:    get_current_datetime, web_search, read_clipboard, summarize_clipboard, open_application, type_text")
+    print(" Tools Active:    get_current_datetime, web_search, read_clipboard, summarize_clipboard, open_application, type_text, run_python")
     print(" Hardware Target: NVIDIA RTX 3050 (6GB) - GPU Acceleration")
     print(" Commands:")
     print("   'exit' or 'quit' -> Exit the chat loop")

@@ -14,6 +14,11 @@ from src.agent.tools.desktop import (
     open_application,
     type_text,
 )
+from src.agent.tools.sandbox import (
+    execute_in_sandbox,
+    run_python,
+    validate_code_ast,
+)
 from src.agent.tools.web_search import search_searxng, web_search
 
 __all__ = [
@@ -30,5 +35,8 @@ __all__ = [
     "get_active_window_title",
     "focus_window_by_name",
     "APP_ALIASES",
+    "run_python",
+    "execute_in_sandbox",
+    "validate_code_ast",
 ]
 
