@@ -38,6 +38,7 @@ from src.agent.tools.desktop import (
     open_application,
     type_text,
 )
+from src.agent.tools.sandbox import run_python
 from src.agent.tools.web_search import web_search
 from src.agent.graph import run_agent
 import pyperclip
@@ -393,6 +394,36 @@ def test_direct_focus_window() -> bool:
     return True
 
 
+def test_direct_sandbox_calculation() -> bool:
+    """Tests direct execution of run_python sandbox calculation tool."""
+    print("=" * 70)
+    print(" STEP 11: Direct Sandbox Python Tool Test (Quick Calculation)")
+    print("=" * 70)
+
+    # 1. Quick percentage calculation (e.g. 15% of 340)
+    calc_expr = "340 * 0.15"
+    print(f"Calculating expression: '{calc_expr}'...")
+    start = time.perf_counter()
+    result = run_python.invoke({"code": calc_expr})
+    elapsed = time.perf_counter() - start
+
+    print(f"\nResult received in {elapsed * 1000:.2f}ms: {result}\n")
+    if result.strip() != "51.0":
+        print(f"FAIL: Expected '51.0', got '{result}'.")
+        return False
+    print("PASS: run_python calculated 15% of 340 correctly (51.0)!")
+
+    # 2. Blocked import security rejection
+    print("Testing security rejection of 'import os'...")
+    sec_result = run_python.invoke({"code": "import os"})
+    print(f"Security rejection result: {sec_result}")
+    if "SecurityError" not in sec_result or "prohibited" not in sec_result:
+        print("FAIL: run_python did not reject 'import os'.")
+        return False
+    print("PASS: run_python successfully rejected prohibited 'import os' statically!\n")
+    return True
+
+
 def test_agent_desktop_routing() -> bool:
     """Tests agent routing when user asks to open an application."""
     print("=" * 70)
@@ -523,6 +554,10 @@ def main():
 
     focus_win_ok = test_direct_focus_window()
     if not focus_win_ok:
+        sys.exit(1)
+
+    sandbox_ok = test_direct_sandbox_calculation()
+    if not sandbox_ok:
         sys.exit(1)
 
     agent_dt_ok = test_agent_datetime_invocation()
