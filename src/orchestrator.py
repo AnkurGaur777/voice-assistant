@@ -33,6 +33,7 @@ Known Limitations:
 
 import argparse
 import os
+import re
 import signal
 import sys
 import threading
@@ -44,6 +45,12 @@ from typing import List, Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# Safe guard for headless / pythonw.exe execution where stdout/stderr might be None
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
 
 from langchain_core.messages import BaseMessage
 
@@ -61,7 +68,52 @@ from src.wake_word import WakeWordDetector
 from tray.tray_app import JarvisTrayApp, JarvisTrayState
 
 
-def print_banner(model: str, voice: str, whisper_model: str, enable_tray: bool, enable_memory: bool) -> None:
+# Configurable stop phrases that signal the agent to exit continuous conversation mode
+DEFAULT_STOP_PHRASES: List[str] = [
+    "stop",
+    "goodbye",
+    "bye",
+    "that's all",
+    "thats all",
+    "thank you jarvis",
+    "thank you, jarvis",
+    "thank you",
+    "exit",
+    "quit",
+    "cancel",
+    "nevermind",
+]
+
+
+def is_stop_phrase(text: str, stop_phrases: Optional[List[str]] = None) -> bool:
+    """
+    Checks if transcribed user text matches or contains an exit / stop phrase.
+    Normalizes punctuation, whitespace, and case.
+    """
+    if not text or not text.strip():
+        return False
+    clean = re.sub(r"[^\w\s]", "", text).lower().strip()
+    phrases = stop_phrases or DEFAULT_STOP_PHRASES
+    for phrase in phrases:
+        clean_phrase = re.sub(r"[^\w\s]", "", phrase).lower().strip()
+        if not clean_phrase:
+            continue
+        if clean == clean_phrase:
+            return True
+        if clean.startswith(f"{clean_phrase} ") or clean.endswith(f" {clean_phrase}"):
+            return True
+    return False
+
+
+def print_banner(
+    model: str,
+    voice: str,
+    whisper_model: str,
+    enable_tray: bool,
+    enable_memory: bool,
+    continuous_mode: bool = True,
+    conversation_timeout: float = 6.0,
+) -> None:
     """Prints a styled startup banner with system configuration."""
     print("\n" + "=" * 78)
     print("      LOCAL JARVIS - AUTONOMOUS VOICE ASSISTANT PIPELINE")
@@ -70,11 +122,14 @@ def print_banner(model: str, voice: str, whisper_model: str, enable_tray: bool, 
     print(f"  STT Engine:        faster-whisper '{whisper_model}' (CPU INT8)")
     print(f"  LLM Brain:         {model} via local Ollama (RTX 3050 GPU)")
     print(f"  TTS Engine:        Piper '{voice}' (CPU offline playback)")
-    print(f"  Agent Tools:       9 Tools (DateTime, Reminders, Search, Desktop, Clipboard, Sandbox)")
+    print(f"  Agent Tools:       10 Tools (DateTime, Reminders, Search, Desktop, Clipboard, Sandbox)")
     print(f"  Vector Memory:     {'ChromaDB (all-MiniLM-L6-v2, CPU)' if enable_memory else 'Disabled'}")
+    print(f"  Continuous Mode:   {'Active (' + str(conversation_timeout) + 's silence timeout)' if continuous_mode else 'Disabled (Wake-word only)'}")
     print(f"  System Tray Icon:  {'Active (pystray thread)' if enable_tray else 'Disabled (--no-tray)'}")
     print("  Controls:")
     print("    - Speak 'Hey Jarvis' followed by your command/question hands-free.")
+    print("    - Speak follow-up questions hands-free without repeating 'Hey Jarvis'.")
+    print("    - Say 'stop', 'goodbye', or 'that's all' to exit active conversation.")
     print("    - Right-click tray icon -> 'Quit Jarvis' OR press Ctrl+C in console to exit.")
     print("=" * 78 + "\n")
 
@@ -96,6 +151,9 @@ class VoiceAssistantOrchestrator:
         audio_device: Optional[int] = None,
         enable_tray: bool = True,
         enable_memory: bool = True,
+        continuous_mode: bool = True,
+        conversation_timeout: float = 6.0,
+        stop_phrases: Optional[List[str]] = None,
         debug: bool = False,
     ):
         self.model = model
@@ -108,6 +166,9 @@ class VoiceAssistantOrchestrator:
         self.audio_device = audio_device
         self.enable_tray = enable_tray
         self.enable_memory = enable_memory
+        self.continuous_mode = continuous_mode
+        self.conversation_timeout = conversation_timeout
+        self.stop_phrases = stop_phrases or list(DEFAULT_STOP_PHRASES)
         self.debug = debug
 
         self.shutdown_event = threading.Event()
@@ -287,9 +348,120 @@ class VoiceAssistantOrchestrator:
                 return True
 
         # ---------------------------------------------------------------------
-        # STAGE 5: Loop back to listening
+        # STAGE 5: Hands-Free Continuous Conversation Loop (Multi-Turn)
         # ---------------------------------------------------------------------
-        print("[Pipeline] Stage 5: Turn completed. Returning to wake word listening.")
+        if self.continuous_mode and not self.shutdown_event.is_set():
+            print("\n" + "=" * 60)
+            print("[Pipeline] Stage 5: ENTERING ACTIVE CONVERSATION MODE")
+            print("  - Speak follow-up hands-free without repeating 'Hey Jarvis'.")
+            print("  - Say 'stop', 'goodbye', or 'that's all' to exit conversation.")
+            print(f"  - Times out quietly after {self.conversation_timeout:.1f}s of silence.")
+            print("=" * 60)
+
+            while not self.shutdown_event.is_set():
+                self._set_tray_state(
+                    JarvisTrayState.CONVERSATION,
+                    "Active Conversation (Listening hands-free)...",
+                )
+                try:
+                    followup_clip_path = self.detector.record_utterance(
+                        stop_event=self.shutdown_event,
+                        speech_timeout=self.conversation_timeout,
+                    )
+                except Exception as e:
+                    print(f"[Conversation Error] Error capturing audio: {e}")
+                    break
+
+                if self.shutdown_event.is_set():
+                    return False
+
+                # Check for silence timeout (no speech detected within window)
+                if not followup_clip_path:
+                    print(
+                        f"[Conversation] Silence timeout ({self.conversation_timeout:.1f}s). "
+                        "Quietly reverting to wake-word standby (conversation history retained)."
+                    )
+                    break
+
+                # STT Transcribe
+                self._set_tray_state(JarvisTrayState.PROCESSING, "Transcribing user speech...")
+                followup_text = ""
+                try:
+                    followup_start = time.perf_counter()
+                    followup_text = transcribe_audio(
+                        audio_path=followup_clip_path,
+                        model_size=self.whisper_model,
+                    )
+                    followup_stt_elapsed = time.perf_counter() - followup_start
+                    print(f"[STT] Transcribed in {followup_stt_elapsed:.2f}s: \"{followup_text}\"")
+                except Exception as e:
+                    print(f"[Conversation Error] STT failed: {e}")
+                    self._set_tray_state(JarvisTrayState.ERROR, f"STT Error: {e}")
+                    time.sleep(1.0)
+                    continue
+
+                if not followup_text or not followup_text.strip():
+                    print("[Conversation] Empty utterance. Continuing active listening...")
+                    continue
+
+                print(f"\nUser (Conversation) > {followup_text}")
+
+                # Check if user spoke a stop phrase
+                if is_stop_phrase(followup_text, self.stop_phrases):
+                    print(f"[Conversation] Stop phrase detected ('{followup_text}'). Exiting conversation mode.")
+                    self._set_tray_state(JarvisTrayState.SPEAKING, "Goodbye!")
+                    try:
+                        speak("Goodbye!", voice=self.voice, blocking=True)
+                    except Exception as tts_err:
+                        if self.debug:
+                            print(f"[DEBUG] Stop phrase TTS error: {tts_err}")
+                    break
+
+                # Brain & LangGraph Agent
+                self._set_tray_state(JarvisTrayState.PROCESSING, f"Thinking about: {followup_text[:25]}...")
+                followup_resp = ""
+                try:
+                    agent_start = time.perf_counter()
+                    followup_resp, self.conversation_history = run_agent(
+                        user_input=followup_text,
+                        history=self.conversation_history,
+                        app=self.agent_app,
+                        model=self.model,
+                        base_url=self.base_url,
+                        temperature=self.temperature,
+                        num_predict=self.max_tokens,
+                        enable_memory=self.enable_memory,
+                    )
+                    agent_elapsed = time.perf_counter() - agent_start
+                    print(f"[Brain] Response generated in {agent_elapsed:.2f}s")
+                except Exception as e:
+                    print(f"[Conversation Error] Agent execution error: {e}")
+                    self._set_tray_state(JarvisTrayState.ERROR, f"Agent Error: {e}")
+                    time.sleep(1.0)
+                    continue
+
+                followup_resp = sanitize_speech_text(followup_resp)
+                print(f"\nJarvis (Conversation) > {followup_resp}\n")
+
+                # Speaking response aloud (Piper TTS)
+                if followup_resp and followup_resp.strip():
+                    self._set_tray_state(JarvisTrayState.SPEAKING, "Speaking response aloud...")
+                    try:
+                        speak_start = time.perf_counter()
+                        speak(
+                            text=followup_resp,
+                            voice=self.voice,
+                            blocking=True,
+                            on_start_playback=lambda ttfa: print(f"[TTS] Playback started in {ttfa:.2f}s (TTFA)"),
+                        )
+                        speak_elapsed = time.perf_counter() - speak_start
+                        print(f"[TTS] Finished speaking in {speak_elapsed:.2f}s.")
+                    except Exception as e:
+                        print(f"[Conversation Error] TTS playback error: {e}")
+                        self._set_tray_state(JarvisTrayState.ERROR, f"TTS Error: {e}")
+                        time.sleep(1.0)
+
+        print("[Pipeline] Reverting to wake word listening.")
         return True
 
     def run(self) -> None:
@@ -395,6 +567,23 @@ def main():
         help=f"Temperature for LLM reasoning (default: {DEFAULT_TEMPERATURE})",
     )
     parser.add_argument(
+        "--no-continuous",
+        action="store_true",
+        help="Disable hands-free continuous conversation mode (wake-word required for every turn)",
+    )
+    parser.add_argument(
+        "--conversation-timeout",
+        type=float,
+        default=6.0,
+        help="Seconds of silence in continuous mode before reverting to wake-word listening (default: 6.0)",
+    )
+    parser.add_argument(
+        "--stop-phrases",
+        type=str,
+        default=None,
+        help="Comma-separated custom stop phrases (default: 'stop,goodbye,bye,that\\'s all,thank you jarvis')",
+    )
+    parser.add_argument(
         "--no-tray",
         action="store_true",
         help="Run in headless console mode without system tray icon",
@@ -414,6 +603,12 @@ def main():
 
     enable_tray = not args.no_tray
     enable_memory = not args.no_memory
+    continuous_mode = not args.no_continuous
+    stop_phrases_list = (
+        [p.strip() for p in args.stop_phrases.split(",") if p.strip()]
+        if args.stop_phrases
+        else None
+    )
 
     print_banner(
         model=args.model,
@@ -421,6 +616,8 @@ def main():
         whisper_model=args.whisper_model,
         enable_tray=enable_tray,
         enable_memory=enable_memory,
+        continuous_mode=continuous_mode,
+        conversation_timeout=args.conversation_timeout,
     )
 
     orchestrator = VoiceAssistantOrchestrator(
@@ -434,6 +631,9 @@ def main():
         audio_device=args.device,
         enable_tray=enable_tray,
         enable_memory=enable_memory,
+        continuous_mode=continuous_mode,
+        conversation_timeout=args.conversation_timeout,
+        stop_phrases=stop_phrases_list,
         debug=args.debug,
     )
 

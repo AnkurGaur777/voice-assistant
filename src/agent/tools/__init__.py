@@ -12,6 +12,8 @@ from src.agent.tools.desktop import (
     get_active_window_title,
     launch_app,
     open_application,
+    press_enter_in_active_window,
+    press_enter_key,
     type_text,
 )
 from src.agent.tools.reminders import (
@@ -43,6 +45,8 @@ __all__ = [
     "get_clipboard_text",
     "open_application",
     "type_text",
+    "press_enter_key",
+    "press_enter_in_active_window",
     "launch_app",
     "get_active_window_title",
     "focus_window_by_name",

@@ -230,9 +230,11 @@ def launch_app(app_name: str) -> str:
     return f"Application '{app_name}' launched successfully, but could not automatically bring its window to foreground focus."
 
 
-def type_text_into_active_window(text: str) -> str:
+def type_text_into_active_window(text: str, press_enter: bool = False) -> str:
     """
     Types text into the active desktop window with mandatory fail-safe confirmation.
+    Optionally presses the Enter key afterwards (e.g. to send a message or submit)
+    under the same combined confirmation prompt.
 
     NOTE ON FOCUS IN TERMINAL CLI:
     `type_text` targets whatever window is ACTIVE AT THE MOMENT THE TOOL RUNS.
@@ -244,6 +246,7 @@ def type_text_into_active_window(text: str) -> str:
     (such as Notepad, browser, or code editor) to retain desktop focus while speaking.
 
     :param text: Text string to type.
+    :param press_enter: Whether to press Enter after typing to send or submit.
     :return: Status string confirming outcome.
     """
     clean_text = text.strip() if text else ""
@@ -256,6 +259,8 @@ def type_text_into_active_window(text: str) -> str:
     print("\n" + "=" * 70)
     print(" [SECURITY WARNING: DESKTOP KEYSTROKE INJECTION]")
     print(f" Target Active Window: '{window_title}'")
+    action_desc = "Type and Press Enter (Send)" if press_enter else "Type Text"
+    print(f" Action: {action_desc}")
     preview = clean_text[:80] + ("..." if len(clean_text) > 80 else "")
     print(f" Text to Type ({len(clean_text)} chars): '{preview}'")
     print("=" * 70)
@@ -264,32 +269,89 @@ def type_text_into_active_window(text: str) -> str:
     # If input() cannot be read (e.g. no terminal attached, EOF, non-interactive mode),
     # it must DEFAULT TO NOT TYPING and abort safely.
     try:
-        prompt_str = f"Allow typing into active window '{window_title}'? [y/N]: "
+        if press_enter:
+            prompt_str = f"Type '{preview}' and press enter into active window '{window_title}'? [y/N]: "
+        else:
+            prompt_str = f"Allow typing into active window '{window_title}'? [y/N]: "
         user_choice = input(prompt_str).strip().lower()
     except (EOFError, OSError, io.UnsupportedOperation, Exception) as input_err:
+        abort_action = "Typing and enter keypress" if press_enter else "Typing"
         abort_msg = (
-            f"Typing cancelled - no interactive confirmation available ({input_err}). "
+            f"{abort_action} cancelled - no interactive confirmation available ({input_err}). "
             f"No keystrokes were sent to '{window_title}'."
         )
         print(f"[Desktop Automation] {abort_msg}")
         return abort_msg
 
     if user_choice not in ["y", "yes"]:
-        cancel_msg = f"Typing cancelled by user. No text was entered into '{window_title}'."
+        cancel_action = "Typing and enter keypress" if press_enter else "Typing"
+        cancel_msg = f"{cancel_action} cancelled by user. No text was entered into '{window_title}'."
         print(f"[Desktop Automation] {cancel_msg}")
         return cancel_msg
 
-    print(f"[Desktop Automation] Confirmed by user. Typing {len(clean_text)} characters into '{window_title}'...")
+    action_verb = "Typing and pressing enter" if press_enter else "Typing"
+    print(f"[Desktop Automation] Confirmed by user. {action_verb} {len(clean_text)} characters into '{window_title}'...")
     time.sleep(0.3)  # Brief settling pause
 
     try:
         import pyautogui
         pyautogui.write(clean_text, interval=0.01)
-        success_msg = f"Successfully typed {len(clean_text)} characters into '{window_title}'."
+        if press_enter:
+            time.sleep(0.05)
+            pyautogui.press("enter")
+            success_msg = f"Successfully typed {len(clean_text)} characters and pressed enter into '{window_title}'."
+        else:
+            success_msg = f"Successfully typed {len(clean_text)} characters into '{window_title}'."
         print(f"[Desktop Automation] {success_msg}")
         return success_msg
     except Exception as exc:
         err_msg = f"Error during typing: {exc}"
+        print(f"[Desktop Automation] {err_msg}")
+        return err_msg
+
+
+def press_enter_in_active_window() -> str:
+    """
+    Simulates pressing the Enter key in the currently active desktop window
+    with mandatory fail-safe confirmation.
+
+    :return: Status string confirming outcome.
+    """
+    window_title = get_active_window_title()
+
+    print("\n" + "=" * 70)
+    print(" [SECURITY WARNING: DESKTOP KEYSTROKE INJECTION]")
+    print(f" Target Active Window: '{window_title}'")
+    print(" Action: Press Enter Key (Send / Submit)")
+    print("=" * 70)
+
+    try:
+        prompt_str = f"Press enter in active window '{window_title}'? [y/N]: "
+        user_choice = input(prompt_str).strip().lower()
+    except (EOFError, OSError, io.UnsupportedOperation, Exception) as input_err:
+        abort_msg = (
+            f"Enter keypress cancelled - no interactive confirmation available ({input_err}). "
+            f"No keystrokes were sent to '{window_title}'."
+        )
+        print(f"[Desktop Automation] {abort_msg}")
+        return abort_msg
+
+    if user_choice not in ["y", "yes"]:
+        cancel_msg = f"Enter keypress cancelled by user. No key was sent to '{window_title}'."
+        print(f"[Desktop Automation] {cancel_msg}")
+        return cancel_msg
+
+    print(f"[Desktop Automation] Confirmed by user. Pressing enter into '{window_title}'...")
+    time.sleep(0.2)
+
+    try:
+        import pyautogui
+        pyautogui.press("enter")
+        success_msg = f"Successfully pressed enter in '{window_title}'."
+        print(f"[Desktop Automation] {success_msg}")
+        return success_msg
+    except Exception as exc:
+        err_msg = f"Error pressing enter: {exc}"
         print(f"[Desktop Automation] {err_msg}")
         return err_msg
 
@@ -308,11 +370,13 @@ def open_application(app_name: str) -> str:
 
 
 @tool
-def type_text(text: str) -> str:
-    """Type given text into the currently active/focused desktop window.
+def type_text(text: str, press_enter: bool = False) -> str:
+    """Type given text into the currently active/focused desktop window, optionally pressing enter.
 
     Simulates keyboard keystrokes to type text into whatever application window
-    currently has focus (e.g. an open text document, search bar, code editor).
+    currently has focus (e.g. an open text document, WhatsApp, Messages, email compose, search bar).
+    If press_enter is True, it simulates pressing the Enter key immediately after typing
+    (useful to send a chat message, search, or submit a form) as a single confirmed action.
     Requires explicit interactive confirmation from the user in the terminal
     before sending any keystrokes for safety.
 
@@ -321,11 +385,22 @@ def type_text(text: str) -> str:
             all words, sentences, or phrases the user requested to be typed after verbs
             like 'type', 'write', 'enter', or 'input'.
             Examples:
-            - User: 'type hello world' -> text='hello world'
-            - User: 'type this should not appear' -> text='this should not appear'
-            - User: 'enter user@example.com' -> text='user@example.com'
-            - User: 'write a quick note' -> text='a quick note'
-            Do not omit any words from the user's intended phrase, and never pass an empty string
-            if text to type was requested.
+            - User: 'type hello world' -> text='hello world', press_enter=False
+            - User: 'type hello and send it' -> text='hello', press_enter=True
+            - User: 'write how are you and press enter' -> text='how are you', press_enter=True
+        press_enter: Optional boolean flag. Set to True if the user asks to send or press enter
+            after typing. Default is False.
     """
-    return type_text_into_active_window(text)
+    return type_text_into_active_window(text, press_enter=press_enter)
+
+
+@tool
+def press_enter_key() -> str:
+    """Press the Enter key in the currently active/focused desktop window.
+
+    Simulates pressing the Enter keyboard key in whatever application window
+    currently has focus (e.g. sending an already-typed message in WhatsApp Web / Slack,
+    submitting a focused web form, or triggering the default action).
+    Requires explicit interactive confirmation from the user before sending the keystroke.
+    """
+    return press_enter_in_active_window()
