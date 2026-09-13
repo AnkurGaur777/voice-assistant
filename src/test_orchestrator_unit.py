@@ -10,18 +10,25 @@ Validates:
 5. Graceful shutdown: stop() cleans up streams, scheduler, and tray icon, and run_turn() exits.
 """
 
+import os
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.orchestrator import (
+    DEFAULT_DISMISSAL_PHRASES,
     DEFAULT_STOP_PHRASES,
     VoiceAssistantOrchestrator,
+    is_dismissal_phrase,
+    is_jarvis_dismissal,
     is_noise_or_wake_word_artifact,
     is_stop_phrase,
 )
@@ -32,11 +39,25 @@ from tray.tray_app import JarvisTrayState
 class TestVoiceAssistantOrchestrator(unittest.TestCase):
     """Unit tests for the orchestrator."""
 
+    @classmethod
+    def setUpClass(cls):
+        cls._orig_test_mode = os.environ.get("JARVIS_TEST_MODE")
+        os.environ["JARVIS_TEST_MODE"] = "1"
+
+    @classmethod
+    def tearDownClass(cls):
+        if cls._orig_test_mode is not None:
+            os.environ["JARVIS_TEST_MODE"] = cls._orig_test_mode
+        else:
+            os.environ.pop("JARVIS_TEST_MODE", None)
+
     def setUp(self):
         self.orchestrator = VoiceAssistantOrchestrator(
             model="llama3.2:3b",
             enable_tray=True,
             enable_memory=False,
+            enable_logging=False,  # Isolate automated unit tests from production interactions.db
+            is_test=True,
             continuous_mode=True,
             conversation_timeout=60.0,
         )
@@ -78,6 +99,71 @@ class TestVoiceAssistantOrchestrator(unittest.TestCase):
         self.assertFalse(is_stop_phrase("hello jarvis"))
         self.assertFalse(is_stop_phrase(""))
         self.assertFalse(is_stop_phrase("   "))
+
+    def test_is_dismissal_phrase(self):
+        """Verifies short dismissal phrase matching with punctuation, whitespace, and case normalization."""
+        # Exact and normalized matches
+        self.assertTrue(is_dismissal_phrase("stop"))
+        self.assertTrue(is_dismissal_phrase("STOP!"))
+        self.assertTrue(is_dismissal_phrase("okay"))
+        self.assertTrue(is_dismissal_phrase("ok"))
+        self.assertTrue(is_dismissal_phrase("got it"))
+        self.assertTrue(is_dismissal_phrase("Got it!"))
+        self.assertTrue(is_dismissal_phrase("never mind"))
+        self.assertTrue(is_dismissal_phrase("nevermind."))
+        self.assertTrue(is_dismissal_phrase("that's enough"))
+        self.assertTrue(is_dismissal_phrase("thats enough!"))
+        self.assertTrue(is_dismissal_phrase("thanks"))
+        self.assertTrue(is_dismissal_phrase("thank you"))
+        self.assertTrue(is_dismissal_phrase("cancel"))
+        self.assertTrue(is_dismissal_phrase("quiet"))
+
+        # Leading/trailing conversational prefixes/suffixes
+        self.assertTrue(is_dismissal_phrase("ok thanks"))
+        self.assertTrue(is_dismissal_phrase("stop jarvis"))
+        self.assertTrue(is_dismissal_phrase("got it jarvis"))
+        self.assertTrue(is_dismissal_phrase("thanks jarvis"))
+
+        # Non-dismissal phrases (e.g. real questions or long utterances)
+        self.assertFalse(is_dismissal_phrase("what time is it"))
+        self.assertFalse(is_dismissal_phrase("open notepad"))
+        self.assertFalse(is_dismissal_phrase("tell me more about this"))
+        self.assertFalse(is_dismissal_phrase("calculate 25 * 4"))
+        self.assertFalse(is_dismissal_phrase(""))
+        self.assertFalse(is_dismissal_phrase("   "))
+
+    def test_is_jarvis_dismissal(self):
+        """Verifies that is_jarvis_dismissal strictly requires 'Jarvis' and dismissal phrase."""
+        # Confirmed Jarvis dismissals
+        self.assertTrue(is_jarvis_dismissal("Jarvis stop"))
+        self.assertTrue(is_jarvis_dismissal("Jarvis, stop!"))
+        self.assertTrue(is_jarvis_dismissal("Jarvis okay"))
+        self.assertTrue(is_jarvis_dismissal("Jarvis ok"))
+        self.assertTrue(is_jarvis_dismissal("Hey Jarvis that's enough"))
+        self.assertTrue(is_jarvis_dismissal("Stop Jarvis"))
+        self.assertTrue(is_jarvis_dismissal("Jarvis got it"))
+        self.assertTrue(is_jarvis_dismissal("Jarvis thanks"))
+        self.assertTrue(is_jarvis_dismissal("Jarvis quiet"))
+        self.assertTrue(is_jarvis_dismissal("Jarvis cancel"))
+        self.assertTrue(is_jarvis_dismissal("Jarvis never mind"))
+
+        # Bare dismissals WITHOUT 'Jarvis' MUST RETURN FALSE to prevent accidental interruption
+        self.assertFalse(is_jarvis_dismissal("stop"))
+        self.assertFalse(is_jarvis_dismissal("okay"))
+        self.assertFalse(is_jarvis_dismissal("ok"))
+        self.assertFalse(is_jarvis_dismissal("got it"))
+        self.assertFalse(is_jarvis_dismissal("that's enough"))
+        self.assertFalse(is_jarvis_dismissal("thanks"))
+        self.assertFalse(is_jarvis_dismissal("quiet"))
+
+        # Real questions or commands MUST RETURN FALSE
+        self.assertFalse(is_jarvis_dismissal("what time is it"))
+        self.assertFalse(is_jarvis_dismissal("open notepad"))
+        self.assertFalse(is_jarvis_dismissal("Jarvis what time is it"))
+        self.assertFalse(is_jarvis_dismissal("Jarvis open chrome"))
+        self.assertFalse(is_jarvis_dismissal("hey jarvis"))
+        self.assertFalse(is_jarvis_dismissal(""))
+        self.assertFalse(is_jarvis_dismissal("   "))
 
     def test_is_noise_or_wake_word_artifact(self):
         """Verifies detection of ambient noise, solitary wake words, and acoustic filler artifacts."""
@@ -163,6 +249,7 @@ class TestVoiceAssistantOrchestrator(unittest.TestCase):
                 text="The time is 10:00 PM",
                 voice="ryan",
                 blocking=True,
+                interrupt_event=unittest.mock.ANY,
                 on_start_playback=unittest.mock.ANY,
             )
             # Verify tray transitions occurred
@@ -340,7 +427,247 @@ class TestVoiceAssistantOrchestrator(unittest.TestCase):
         # Calling _set_ui_state with no tray/orb should not raise any exceptions
         orchestrator._set_ui_state(JarvisTrayState.SPEAKING, "Speaking...")
 
+    def test_startup_greeting_speaks_on_run(self):
+        """Verifies startup greeting is spoken aloud via TTS when orchestrator.run() starts."""
+        self.orchestrator.initialize = MagicMock()
+        # End loop after 1 turn check
+        self.orchestrator.run_turn = MagicMock(return_value=False)
+
+        with patch("src.orchestrator.speak") as mock_speak:
+            self.orchestrator.run()
+
+            # Startup greeting must be spoken before listening begins
+            self.orchestrator.initialize.assert_called_once()
+            mock_speak.assert_called_once()
+            spoken_text = mock_speak.call_args[1].get("text") or mock_speak.call_args[0][0]
+            self.assertEqual(spoken_text, "Hello! I'm ready, how can I help you today?")
+
+    def test_startup_greeting_disabled_via_flag(self):
+        """Verifies enable_greeting=False skips speaking startup greeting."""
+        orch = VoiceAssistantOrchestrator(enable_greeting=False, is_test=True, enable_logging=False)
+        orch.initialize = MagicMock()
+        orch.run_turn = MagicMock(return_value=False)
+
+        with patch("src.orchestrator.speak") as mock_speak:
+            orch.run()
+
+            mock_speak.assert_not_called()
+
+    def test_barge_in_dismissal_silently_ends_response(self):
+        """Verifies speech interruption with a dismissal phrase halts TTS and returns to standby."""
+        self.orchestrator.detector.listen_and_record.return_value = "query.wav"
+
+        with patch("src.orchestrator.transcribe_audio", return_value="explain quantum computing"), \
+             patch("src.orchestrator.run_agent", return_value=("Quantum computing uses qubits...", [])), \
+             patch.object(self.orchestrator, "_speak_with_barge_in", return_value=(True, None, 1.5)) as mock_barge:
+
+            continue_loop = self.orchestrator.run_turn()
+
+            self.assertTrue(continue_loop)
+            mock_barge.assert_called_once_with(
+                text="Quantum computing uses qubits...",
+                trigger_mode="wake_word",
+            )
+            # Pending user text should remain None (dismissed)
+            self.assertIsNone(self.orchestrator.pending_user_text)
+            # Tray state set back to LISTENING
+            tray_states = [call[0][0] for call in self.orchestrator.tray_app.set_state.call_args_list]
+            self.assertIn(JarvisTrayState.LISTENING, tray_states)
+
+    def test_barge_in_new_question_chains_to_next_turn(self):
+        """Verifies interruption with a new question sets pending_user_text and skips wake word next turn."""
+        self.orchestrator.detector.listen_and_record.return_value = "query1.wav"
+
+        # Turn 1: Interrupted with new question "what time is it"
+        with patch("src.orchestrator.transcribe_audio", return_value="tell me a long story"), \
+             patch("src.orchestrator.run_agent", return_value=("Once upon a time...", [])), \
+             patch.object(self.orchestrator, "_speak_with_barge_in", return_value=(True, "what time is it", 0.8)):
+
+            continue_loop = self.orchestrator.run_turn()
+            self.assertTrue(continue_loop)
+            self.assertEqual(self.orchestrator.pending_user_text, "what time is it")
+
+        # Turn 2: Starts with pending_user_text, skipping listen_and_record
+        self.orchestrator.detector.listen_and_record.reset_mock()
+        with patch("src.orchestrator.transcribe_audio") as mock_stt, \
+             patch("src.orchestrator.run_agent", return_value=("It is 10:00 PM", [])) as mock_agent, \
+             patch.object(self.orchestrator, "_speak_with_barge_in", return_value=(False, None, 1.0)) as mock_barge2:
+
+            continue_loop = self.orchestrator.run_turn()
+            self.assertTrue(continue_loop)
+            # Wake word and STT were skipped!
+            self.orchestrator.detector.listen_and_record.assert_not_called()
+            mock_stt.assert_not_called()
+            # Agent executed directly with the interrupted command
+            mock_agent.assert_called_once()
+            self.assertEqual(mock_agent.call_args[1]["user_input"], "what time is it")
+            self.assertIsNone(self.orchestrator.pending_user_text)
+
+    def test_barge_in_in_continuous_conversation(self):
+        """Verifies barge-in in continuous conversation mode chains immediately to the interrupted command."""
+        self.orchestrator.detector.listen_and_record.return_value = "turn1.wav"
+        # Continuous turn 2: normal record, turn 3: silence timeout
+        self.orchestrator.detector.record_utterance.side_effect = ["turn2.wav", None]
+
+        # In turn 2 playback, user interrupts with "open notepad"
+        with patch("src.orchestrator.transcribe_audio", side_effect=["initial question", "what is 2 plus 2"]), \
+             patch("src.orchestrator.run_agent", side_effect=[
+                 ("initial answer", []),
+                 ("4", []),
+                 ("Opening notepad", []),
+             ]) as mock_agent, \
+             patch.object(self.orchestrator, "_speak_with_barge_in", side_effect=[
+                 (False, None, 1.0),  # Turn 1 normal speak
+                 (True, "open notepad", 0.4),  # Turn 2 interrupted with "open notepad"
+                 (False, None, 0.8),  # Turn 3 (open notepad answer) normal speak
+             ]):
+
+            continue_loop = self.orchestrator.run_turn()
+            self.assertTrue(continue_loop)
+            # Agent should have been called 3 times: initial query, follow-up, and interrupted query
+            self.assertEqual(mock_agent.call_count, 3)
+            agent_queries = [call[1]["user_input"] for call in mock_agent.call_args_list]
+            self.assertEqual(agent_queries, ["initial question", "what is 2 plus 2", "open notepad"])
+
+    def test_wake_ack_speaks_on_detection(self):
+        """Verifies _handle_wake_word_detected speaks wake-word acknowledgment when enabled."""
+        with patch("src.orchestrator.speak") as mock_speak:
+            self.orchestrator.enable_wake_ack = True
+            self.orchestrator.wake_ack_text = "Yes?"
+            self.orchestrator._handle_wake_word_detected(0.88)
+
+            mock_speak.assert_called_once_with("Yes?", voice=self.orchestrator.voice, blocking=True)
+
+    def test_wake_ack_disabled_via_flag(self):
+        """Verifies _handle_wake_word_detected does not speak when enable_wake_ack is False."""
+        with patch("src.orchestrator.speak") as mock_speak:
+            self.orchestrator.enable_wake_ack = False
+            self.orchestrator._handle_wake_word_detected(0.88)
+
+            mock_speak.assert_not_called()
+
+    def test_speak_with_barge_in_direct_detection(self):
+        """Verifies _speak_with_barge_in detects energy, verifies 'Jarvis stop' dismissal, and cancels playback."""
+        import queue
+        from src.wake_word import CHUNK_SAMPLES, SILENCE_CHUNKS
+
+        audio_q = queue.Queue()
+        self.orchestrator.detector.audio_queue = audio_q
+        self.orchestrator.barge_in_threshold = 400.0
+
+        loud_chunk = np.full(CHUNK_SAMPLES, 1000, dtype=np.int16)
+        silent_chunk = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+
+        def mock_speak_impl(text, voice, blocking, interrupt_event, on_start_playback):
+            # Feed frames while TTS playback thread is active (after grace period)
+            time.sleep(0.3)
+            for _ in range(4):
+                audio_q.put(loud_chunk)
+            for _ in range(SILENCE_CHUNKS + 2):
+                audio_q.put(silent_chunk)
+
+            # Wait for interrupt_event to be set by barge-in monitor
+            interrupt_event.wait(timeout=1.5)
+            return not interrupt_event.is_set()
+
+        with patch("src.orchestrator.speak", side_effect=mock_speak_impl), \
+             patch("src.orchestrator.wavfile.write"), \
+             patch("src.orchestrator.transcribe_audio", return_value="Jarvis stop"):
+
+            interrupted, next_query, duration = self.orchestrator._speak_with_barge_in(
+                text="A long answer to test interruption",
+                trigger_mode="wake_word",
+            )
+
+            self.assertTrue(interrupted)
+            self.assertIsNone(next_query)  # "Jarvis stop" is recognized as a confirmed dismissal
+
+    def test_speak_with_barge_in_ignores_bare_dismissal_and_noise(self):
+        """Verifies bare dismissal words ('stop') and acoustic noise do NOT abort playback."""
+        import queue
+        from src.wake_word import CHUNK_SAMPLES, SILENCE_CHUNKS
+
+        audio_q = queue.Queue()
+        self.orchestrator.detector.audio_queue = audio_q
+        self.orchestrator.barge_in_threshold = 400.0
+
+        loud_chunk = np.full(CHUNK_SAMPLES, 1000, dtype=np.int16)
+        silent_chunk = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+
+        def mock_speak_impl(text, voice, blocking, interrupt_event, on_start_playback):
+            # Feed frames while TTS playback thread is active
+            time.sleep(0.3)
+            for _ in range(4):
+                audio_q.put(loud_chunk)
+            for _ in range(SILENCE_CHUNKS + 2):
+                audio_q.put(silent_chunk)
+            # Sleep briefly so playback finishes without interrupt
+            time.sleep(0.2)
+            return True
+
+        # Test A: Bare "stop" without "Jarvis" -> playback continues, not interrupted
+        with patch("src.orchestrator.speak", side_effect=mock_speak_impl), \
+             patch("src.orchestrator.wavfile.write"), \
+             patch("src.orchestrator.transcribe_audio", return_value="stop"):
+
+            interrupted, next_query, duration = self.orchestrator._speak_with_barge_in(
+                text="A long answer that should not be interrupted by bare stop",
+                trigger_mode="wake_word",
+            )
+
+            self.assertFalse(interrupted)
+            self.assertIsNone(next_query)
+
+        # Test B: Noise artifact "[cough]" -> playback continues, not interrupted
+        with patch("src.orchestrator.speak", side_effect=mock_speak_impl), \
+             patch("src.orchestrator.wavfile.write"), \
+             patch("src.orchestrator.transcribe_audio", return_value="[cough]"):
+
+            interrupted, next_query, duration = self.orchestrator._speak_with_barge_in(
+                text="A long answer that should not be interrupted by cough",
+                trigger_mode="wake_word",
+            )
+
+            self.assertFalse(interrupted)
+            self.assertIsNone(next_query)
+
+    def test_speak_with_barge_in_new_question_abort(self):
+        """Verifies new questions without 'Jarvis' (e.g. 'what time is it') abort playback and chain."""
+        import queue
+        from src.wake_word import CHUNK_SAMPLES, SILENCE_CHUNKS
+
+        audio_q = queue.Queue()
+        self.orchestrator.detector.audio_queue = audio_q
+        self.orchestrator.barge_in_threshold = 400.0
+
+        loud_chunk = np.full(CHUNK_SAMPLES, 1000, dtype=np.int16)
+        silent_chunk = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+
+        def mock_speak_impl(text, voice, blocking, interrupt_event, on_start_playback):
+            time.sleep(0.3)
+            for _ in range(4):
+                audio_q.put(loud_chunk)
+            for _ in range(SILENCE_CHUNKS + 2):
+                audio_q.put(silent_chunk)
+
+            interrupt_event.wait(timeout=1.5)
+            return not interrupt_event.is_set()
+
+        with patch("src.orchestrator.speak", side_effect=mock_speak_impl), \
+             patch("src.orchestrator.wavfile.write"), \
+             patch("src.orchestrator.transcribe_audio", return_value="what time is it"):
+
+            interrupted, next_query, duration = self.orchestrator._speak_with_barge_in(
+                text="A long answer being spoken",
+                trigger_mode="wake_word",
+            )
+
+            self.assertTrue(interrupted)
+            self.assertEqual(next_query, "what time is it")
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
 

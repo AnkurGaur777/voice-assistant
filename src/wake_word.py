@@ -310,6 +310,14 @@ class WakeWordDetector:
         print("Wake word detected")
         if on_wake_word_detected:
             on_wake_word_detected(detected_score)
+            # Drain audio queue and reset pre-roll buffer so that any spoken
+            # wake-word acknowledgment (e.g. "Yes?") is not recorded or transcribed
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self.pre_roll_buffer.clear()
 
         # Compute adaptive silence threshold (background RMS * 2.2, with fallback floor)
         if len(ambient_energies) > 5:

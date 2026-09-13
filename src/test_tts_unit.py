@@ -121,45 +121,76 @@ class TestSynthesisPipeline(unittest.TestCase):
     @patch("sounddevice.OutputStream")
     @patch("src.tts.get_piper_voice")
     def test_speak_single_sentence(self, mock_get_voice, mock_stream_cls, mock_sleep):
-        """Single sentence speaks using sounddevice.OutputStream and writes audio with trailing padding."""
+        """Single sentence speaks using sounddevice.OutputStream and writes sliced audio with trailing padding."""
         mock_get_voice.return_value = self.mock_voice
         mock_stream = MagicMock()
         mock_stream.latency = 0.18
         mock_stream_cls.return_value = mock_stream
 
-        speak("One short sentence.", voice="ryan", blocking=True)
+        result = speak("One short sentence.", voice="ryan", blocking=True)
 
+        self.assertTrue(result)
         mock_stream_cls.assert_called_once()
         mock_stream.start.assert_called_once()
-        mock_stream.write.assert_called_once()
+        self.assertGreaterEqual(mock_stream.write.call_count, 1)
         mock_stream.stop.assert_called_once()
         mock_stream.close.assert_called_once()
-        mock_sleep.assert_called_once()
+        mock_sleep.assert_called()
 
     @patch("time.sleep")
     @patch("sounddevice.OutputStream")
     @patch("src.tts.get_piper_voice")
     def test_speak_multi_sentence_streaming(self, mock_get_voice, mock_stream_cls, mock_sleep):
-        """Multi-sentence input triggers streaming synthesis and continuous stream writes for each sentence."""
+        """Multi-sentence input triggers streaming synthesis and sliced stream writes for each sentence."""
         mock_get_voice.return_value = self.mock_voice
         mock_stream = MagicMock()
         mock_stream.latency = 0.18
         mock_stream_cls.return_value = mock_stream
 
         ttfa_list = []
-        speak(
+        result = speak(
             "Sentence one. Sentence two. Sentence three.",
             voice="ryan",
             blocking=True,
             on_start_playback=lambda t: ttfa_list.append(t),
         )
 
+        self.assertTrue(result)
         mock_stream_cls.assert_called_once()
         mock_stream.start.assert_called_once()
-        # 3 sentences -> 3 write calls to the continuous stream
-        self.assertEqual(mock_stream.write.call_count, 3)
+        self.assertGreater(mock_stream.write.call_count, 3)
         self.assertEqual(len(ttfa_list), 1)
         self.assertGreaterEqual(ttfa_list[0], 0.0)
+        mock_stream.stop.assert_called_once()
+        mock_stream.close.assert_called_once()
+
+    @patch("time.sleep")
+    @patch("sounddevice.OutputStream")
+    @patch("src.tts.get_piper_voice")
+    def test_speak_with_interrupt_event_aborts_playback(self, mock_get_voice, mock_stream_cls, mock_sleep):
+        """Setting interrupt_event causes speak() to immediately abort stream and return False."""
+        import threading
+        mock_get_voice.return_value = self.mock_voice
+        mock_stream = MagicMock()
+        mock_stream.latency = 0.18
+        mock_stream_cls.return_value = mock_stream
+
+        interrupt_event = threading.Event()
+        # Trigger interrupt after the first stream.write call
+        def on_write(data):
+            interrupt_event.set()
+
+        mock_stream.write.side_effect = on_write
+
+        result = speak(
+            "Sentence one. Sentence two. Sentence three.",
+            voice="ryan",
+            blocking=True,
+            interrupt_event=interrupt_event,
+        )
+
+        self.assertFalse(result)
+        mock_stream.abort.assert_called_once()
         mock_stream.stop.assert_called_once()
         mock_stream.close.assert_called_once()
 

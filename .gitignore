@@ -39,6 +39,8 @@ reminders.db
 
 # Analysis & Notebooks
 .ipynb_checkpoints/
+analysis/interactions.db
+analysis/interactions_export.csv
 
 # IDE & Editor files
 .vscode/

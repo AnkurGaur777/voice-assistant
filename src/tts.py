@@ -332,7 +332,8 @@ def speak(
     voice: str = DEFAULT_VOICE,
     blocking: bool = True,
     on_start_playback: Optional[Callable[[float], None]] = None,
-) -> None:
+    interrupt_event: Optional[threading.Event] = None,
+) -> bool:
     """
     Synthesizes and plays speech using Piper and sounddevice.
 
@@ -341,6 +342,8 @@ def speak(
       almost immediately without waiting for the full response to finish synthesizing.
     - Uses a continuous sounddevice.OutputStream across all sentences, preventing
       abrupt stream restarts or clicks between chunks.
+    - Slices audio output into small ~50ms chunks, continuously checking interrupt_event
+      for immediate (<50ms) speech cancellation and hardware buffer abort ("barge-in").
     - Appends trailing silence padding to each sentence and explicitly drains the
       operating system / hardware audio buffer before closing the stream, ensuring
       the final syllables of words are never cut off.
@@ -351,17 +354,21 @@ def speak(
         blocking: If True, blocks until speech playback finishes.
         on_start_playback: Optional callback invoked with the Time-to-First-Audio (TTFA)
             in seconds when playback actually starts.
+        interrupt_event: Optional threading.Event to signal immediate speech playback cancellation.
+
+    Returns:
+        bool: True if playback completed normally, False if interrupted or cancelled.
     """
     clean_text = sanitize_speech_text(text)
     if not clean_text:
         print("[TTS] Text contained only raw tool syntax or was empty after sanitization; skipping speech playback.")
-        return
+        return True
 
-    def _execute_speak():
+    def _execute_speak() -> bool:
         piper_voice = get_piper_voice(voice)
         sentences = split_into_sentences(clean_text)
         if not sentences:
-            return
+            return True
 
         sample_rate = piper_voice.config.sample_rate
 
@@ -370,13 +377,14 @@ def speak(
         audio_queue: queue.Queue = queue.Queue(maxsize=3)
         stop_event = threading.Event()
         producer_error: List[Exception] = []
+        interrupted = False
 
         total_sentences = len(sentences)
 
         def synthesis_producer():
             try:
                 for idx, sentence in enumerate(sentences):
-                    if stop_event.is_set():
+                    if stop_event.is_set() or (interrupt_event is not None and interrupt_event.is_set()):
                         break
                     audio_data, sr = synthesize_sentence(sentence, piper_voice)
                     is_last = (idx == total_sentences - 1)
@@ -414,7 +422,17 @@ def speak(
         try:
             first_sentence = True
             while True:
-                item = audio_queue.get()
+                if stop_event.is_set() or (interrupt_event is not None and interrupt_event.is_set()):
+                    interrupted = True
+                    break
+                try:
+                    item = audio_queue.get(timeout=0.05)
+                except queue.Empty:
+                    if stop_event.is_set() or (interrupt_event is not None and interrupt_event.is_set()):
+                        interrupted = True
+                        break
+                    continue
+
                 if item is None:
                     break
 
@@ -434,16 +452,31 @@ def speak(
                     stream.start()
 
                 if stream is not None and len(audio_data) > 0:
-                    stream.write(audio_data)
+                    # Sliced write in ~50ms chunks to enable instantaneous interruption
+                    slice_size = max(1, int(sr * 0.05))
+                    for offset in range(0, len(audio_data), slice_size):
+                        if stop_event.is_set() or (interrupt_event is not None and interrupt_event.is_set()):
+                            interrupted = True
+                            break
+                        slice_chunk = audio_data[offset : offset + slice_size]
+                        stream.write(slice_chunk)
+                    if interrupted:
+                        break
 
-            # After all chunks are written, wait for hardware/OS audio buffer to completely drain
-            if stream is not None:
+            # After all chunks are written, wait for hardware/OS audio buffer to drain
+            if stream is not None and not interrupted:
                 latency = stream.latency
                 output_latency = latency[1] if isinstance(latency, (list, tuple)) else (latency if isinstance(latency, (int, float)) else 0.2)
                 drain_delay = max(float(output_latency), 0.15)
-                time.sleep(drain_delay)
+                drain_start = time.perf_counter()
+                while time.perf_counter() - drain_start < drain_delay:
+                    if stop_event.is_set() or (interrupt_event is not None and interrupt_event.is_set()):
+                        interrupted = True
+                        break
+                    time.sleep(min(0.02, drain_delay))
 
         except KeyboardInterrupt:
+            interrupted = True
             stop_event.set()
             if stream is not None:
                 stream.abort()
@@ -452,19 +485,24 @@ def speak(
             stop_event.set()
             if stream is not None:
                 try:
+                    if interrupted:
+                        stream.abort()
                     stream.stop()
                     stream.close()
                 except Exception:
                     pass
             producer_thread.join(timeout=1.0)
-            if producer_error:
+            if producer_error and not interrupted:
                 raise producer_error[0]
 
+        return not interrupted
+
     if blocking:
-        _execute_speak()
+        return _execute_speak()
     else:
         bg_thread = threading.Thread(target=_execute_speak, name="TTS_AsyncSpeak", daemon=True)
         bg_thread.start()
+        return True
 
 
 def synthesize_to_wav(

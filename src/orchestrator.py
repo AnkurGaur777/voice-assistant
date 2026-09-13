@@ -32,14 +32,19 @@ Known Limitations:
 """
 
 import argparse
+import collections
 import os
+import queue
 import re
 import signal
 import sys
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Sequence, Tuple, Union
+
+import numpy as np
+from scipy.io import wavfile
 
 # Ensure project root is on sys.path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -62,10 +67,21 @@ from src.agent.graph import (
     run_agent,
 )
 from src.agent.tools.reminders import start_reminder_scheduler, stop_reminder_scheduler
+from src.analytics.logger import flush_logging, log_interaction, shutdown_logging
 from src.stt import transcribe_audio, get_transcriber
 from src.tts import DEFAULT_VOICE, get_piper_voice, speak, sanitize_speech_text
 from src.ui.orb_overlay import OrbOverlay, OrbState
-from src.wake_word import WakeWordDetector
+from src.wake_word import (
+    AUDIO_CACHE_DIR,
+    CHUNK_DURATION,
+    CHUNK_SAMPLES,
+    DEFAULT_SILENCE_RMS,
+    MAX_RECORDING_SECONDS,
+    SAMPLE_RATE,
+    SILENCE_CHUNKS,
+    SILENCE_DURATION,
+    WakeWordDetector,
+)
 from tray.tray_app import JarvisTrayApp, JarvisTrayState
 
 
@@ -83,6 +99,25 @@ DEFAULT_STOP_PHRASES: List[str] = [
     "quit",
     "cancel",
     "nevermind",
+]
+
+# Configurable short dismissal phrases that silently cancel TTS playback without starting a new query
+DEFAULT_DISMISSAL_PHRASES: List[str] = [
+    "okay",
+    "ok",
+    "got it",
+    "stop",
+    "never mind",
+    "nevermind",
+    "that's enough",
+    "thats enough",
+    "thanks",
+    "thank you",
+    "cancel",
+    "shh",
+    "quiet",
+    "enough",
+    "hush",
 ]
 
 
@@ -103,6 +138,102 @@ def is_stop_phrase(text: str, stop_phrases: Optional[List[str]] = None) -> bool:
             return True
         if clean.startswith(f"{clean_phrase} ") or clean.endswith(f" {clean_phrase}"):
             return True
+    return False
+
+
+def is_dismissal_phrase(text: str, dismissal_phrases: Optional[List[str]] = None) -> bool:
+    """
+    Checks if transcribed user interruption text is a short dismissal phrase.
+    Normalizes punctuation, whitespace, and case.
+    """
+    if not text or not text.strip():
+        return False
+    clean = re.sub(r"[^\w\s]", "", text).lower().strip()
+    if not clean:
+        return False
+    phrases = dismissal_phrases or DEFAULT_DISMISSAL_PHRASES
+    tokens = clean.split()
+    for phrase in phrases:
+        clean_phrase = re.sub(r"[^\w\s]", "", phrase).lower().strip()
+        if not clean_phrase:
+            continue
+        if clean == clean_phrase:
+            return True
+        # Allow short trailing phrases like "ok thanks", "stop jarvis", "got it jarvis" (<= 5 words)
+        if (clean.startswith(f"{clean_phrase} ") or clean.endswith(f" {clean_phrase}")) and len(tokens) <= 5:
+            return True
+    return False
+
+
+def is_jarvis_dismissal(text: str, dismissal_phrases: Optional[List[str]] = None) -> bool:
+    """
+    Checks if an utterance during TTS playback is a dismissal targeted at Jarvis
+    (e.g., 'Jarvis stop', 'Jarvis okay', 'Hey Jarvis that's enough', 'Stop Jarvis').
+
+    Crucially, requires the word 'jarvis' to be present to prevent accidental
+    cancellations from background noise, solitary 'okay's, or coughs.
+    """
+    if not text or not text.strip():
+        return False
+
+    clean = re.sub(r"[^\w\s]", "", text).lower().strip()
+    tokens = clean.split()
+    if not tokens or "jarvis" not in tokens:
+        return False
+
+    # Remove 'jarvis' and polite/greeting prefix tokens
+    non_jarvis_tokens = [w for w in tokens if w != "jarvis"]
+    if not non_jarvis_tokens:
+        return False
+
+    # Filter greeting/filler words when evaluating the dismissal intent
+    semantic_tokens = [w for w in non_jarvis_tokens if w not in {"hey", "hi", "hello", "yo", "please"}]
+    if not semantic_tokens:
+        return False
+
+    semantic_str = " ".join(semantic_tokens)
+    non_jarvis_str = " ".join(non_jarvis_tokens)
+
+    phrases = dismissal_phrases or DEFAULT_DISMISSAL_PHRASES
+    for phrase in phrases:
+        clean_phrase = re.sub(r"[^\w\s]", "", phrase).lower().strip()
+        if not clean_phrase:
+            continue
+        if semantic_str == clean_phrase or non_jarvis_str == clean_phrase:
+            return True
+        # For multi-word utterances, match phrase if inside semantic tokens and utterance is short (<= 5 tokens)
+        if len(tokens) <= 5:
+            phrase_tokens = clean_phrase.split()
+            if all(pt in semantic_tokens for pt in phrase_tokens):
+                query_words = {"what", "how", "why", "where", "who", "when", "can", "could", "tell", "show", "open", "search", "find", "play"}
+                if not any(qw in tokens for qw in query_words):
+                    return True
+
+    return False
+
+
+def is_speaker_echo(interruption_text: str, spoken_text: str) -> bool:
+    """
+    Checks if the transcribed interruption text is an echo of the assistant's
+    own voice currently being spoken through the speakers.
+    """
+    if not interruption_text or not spoken_text:
+        return False
+    clean_interruption = re.sub(r"[^\w\s]", "", interruption_text).lower().strip()
+    clean_spoken = re.sub(r"[^\w\s]", "", spoken_text).lower().strip()
+    if not clean_interruption or not clean_spoken:
+        return False
+    if clean_interruption in clean_spoken:
+        return True
+    tokens_i = clean_interruption.split()
+    if len(tokens_i) >= 3:
+        for i in range(len(tokens_i) - 2):
+            trigram = " ".join(tokens_i[i : i + 3])
+            if trigram in clean_spoken:
+                return True
+    return False
+
+
 def is_noise_or_wake_word_artifact(text: str) -> bool:
     """
     Detects if a transcribed utterance in conversation mode is ambient noise,
@@ -173,6 +304,27 @@ def is_noise_or_wake_word_artifact(text: str) -> bool:
     return False
 
 
+def extract_tools_from_messages(messages: Sequence[BaseMessage]) -> List[str]:
+    """
+    Extracts tool names invoked during a turn from LangChain messages.
+    Inspects ToolMessage instances and AIMessage tool_calls while preserving call order.
+    """
+    tools: List[str] = []
+    for msg in messages:
+        if type(msg).__name__ == "ToolMessage" or (hasattr(msg, "name") and getattr(msg, "tool_call_id", None)):
+            tool_name = getattr(msg, "name", None)
+            if tool_name and tool_name not in tools:
+                tools.append(str(tool_name))
+        tool_calls = getattr(msg, "tool_calls", None)
+        if tool_calls and isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if isinstance(tc, dict) and "name" in tc:
+                    name = tc["name"]
+                    if name and name not in tools:
+                        tools.append(str(name))
+    return tools
+
+
 def print_banner(
     model: str,
     voice: str,
@@ -182,24 +334,36 @@ def print_banner(
     continuous_mode: bool = True,
     conversation_timeout: float = 60.0,
     enable_orb: bool = True,
+    enable_logging: bool = True,
+    enable_greeting: bool = True,
+    greeting_text: str = "Hello! I'm ready, how can I help you today?",
+    enable_barge_in: bool = True,
+    barge_in_threshold: float = 850.0,
+    enable_wake_ack: bool = True,
+    wake_ack_text: str = "Yes?",
 ) -> None:
     """Prints a styled startup banner with system configuration."""
     print("\n" + "=" * 78)
     print("      LOCAL JARVIS - AUTONOMOUS VOICE ASSISTANT PIPELINE")
     print("=" * 78)
     print(f"  Wake Word:         'Hey Jarvis' (openWakeWord ONNX)")
+    print(f"  Wake Ack:          {'Active (\"' + wake_ack_text + '\")' if enable_wake_ack else 'Disabled (--no-wake-ack)'}")
     print(f"  STT Engine:        faster-whisper '{whisper_model}' (CPU INT8)")
     print(f"  LLM Brain:         {model} via local Ollama (RTX 3050 GPU)")
     print(f"  TTS Engine:        Piper '{voice}' (CPU offline playback)")
     print(f"  Agent Tools:       10 Tools (DateTime, Reminders, Search, Desktop, Clipboard, Sandbox)")
     print(f"  Vector Memory:     {'ChromaDB (all-MiniLM-L6-v2, CPU)' if enable_memory else 'Disabled'}")
     print(f"  Continuous Mode:   {'Active (' + str(conversation_timeout) + 's silence timeout safety net)' if continuous_mode else 'Disabled (Wake-word only)'}")
+    print(f"  Startup Greeting:  {'Active (\"' + greeting_text + '\")' if enable_greeting else 'Disabled (--no-greeting)'}")
+    print(f"  Speech Barge-In:   {'Active (threshold: ' + str(barge_in_threshold) + ' RMS)' if enable_barge_in else 'Disabled (--no-barge-in)'}")
+    print(f"  Interaction Log:   {'Active (analysis/interactions.db)' if enable_logging else 'Disabled (--no-logging)'}")
     print(f"  System Tray Icon:  {'Active (pystray thread)' if enable_tray else 'Disabled (--no-tray)'}")
     print(f"  Floating Orb UI:   {'Active (Tkinter Canvas)' if enable_orb else 'Disabled (--no-orb)'}")
     print("  Controls:")
     print("    - Speak 'Hey Jarvis' followed by your command/question hands-free.")
     print("    - Speak follow-up questions hands-free without repeating 'Hey Jarvis'.")
     print("    - Say 'stop', 'goodbye', or 'that's all' to exit active conversation.")
+    print("    - Interrupt Jarvis while speaking ('barge-in') to stop or ask a new question.")
     print("    - Right-click tray icon or orb -> 'Quit Jarvis' OR press Ctrl+C to exit.")
     print("=" * 78 + "\n")
 
@@ -222,9 +386,19 @@ class VoiceAssistantOrchestrator:
         enable_tray: bool = True,
         enable_orb: bool = True,
         enable_memory: bool = True,
+        enable_logging: bool = True,
+        is_test: bool = False,
+        db_path: Optional[Union[str, Path]] = None,
         continuous_mode: bool = True,
         conversation_timeout: float = 60.0,
         stop_phrases: Optional[List[str]] = None,
+        enable_greeting: bool = True,
+        greeting_text: str = "Hello! I'm ready, how can I help you today?",
+        enable_barge_in: bool = True,
+        barge_in_threshold: float = 850.0,
+        dismissal_phrases: Optional[List[str]] = None,
+        enable_wake_ack: bool = True,
+        wake_ack_text: str = "Yes?",
         debug: bool = False,
     ):
         self.model = model
@@ -238,9 +412,20 @@ class VoiceAssistantOrchestrator:
         self.enable_tray = enable_tray
         self.enable_orb = enable_orb
         self.enable_memory = enable_memory
+        self.enable_logging = enable_logging
+        self.is_test = is_test or (os.environ.get("JARVIS_TEST_MODE") == "1")
+        self.db_path = db_path
         self.continuous_mode = continuous_mode
         self.conversation_timeout = conversation_timeout
         self.stop_phrases = stop_phrases or list(DEFAULT_STOP_PHRASES)
+        self.enable_greeting = enable_greeting
+        self.greeting_text = greeting_text
+        self.enable_barge_in = enable_barge_in
+        self.barge_in_threshold = barge_in_threshold
+        self.dismissal_phrases = dismissal_phrases or list(DEFAULT_DISMISSAL_PHRASES)
+        self.enable_wake_ack = enable_wake_ack
+        self.wake_ack_text = wake_ack_text
+        self.pending_user_text: Optional[str] = None
         self.debug = debug
 
         self.shutdown_event = threading.Event()
@@ -252,6 +437,35 @@ class VoiceAssistantOrchestrator:
         self.tray_app: Optional[JarvisTrayApp] = None
         self.orb_overlay: Optional[OrbOverlay] = None
         self.scheduler = None
+
+    def _log_turn(
+        self,
+        user_text: str,
+        assistant_response: str,
+        tools_called: Optional[Sequence[str]] = None,
+        stt_seconds: float = 0.0,
+        brain_seconds: float = 0.0,
+        tts_seconds: float = 0.0,
+        total_seconds: Optional[float] = None,
+        success: bool = True,
+        trigger_mode: str = "wake_word",
+    ) -> None:
+        """Internal helper to dispatch interaction logging with orchestrator configuration."""
+        if not self.enable_logging:
+            return
+        log_interaction(
+            user_text=user_text,
+            assistant_response=assistant_response,
+            tools_called=tools_called,
+            stt_seconds=stt_seconds,
+            brain_seconds=brain_seconds,
+            tts_seconds=tts_seconds,
+            total_seconds=total_seconds,
+            success=success,
+            trigger_mode=trigger_mode,
+            db_path=self.db_path,
+            is_test=self.is_test,
+        )
 
     def initialize(self) -> None:
         """Prepares and verifies all pipeline models and sub-systems before entering loop."""
@@ -325,66 +539,344 @@ class VoiceAssistantOrchestrator:
         """Alias for _set_ui_state to preserve backward compatibility."""
         self._set_ui_state(state, custom_msg)
 
-    def run_turn(self) -> bool:
+    def _speak_startup_greeting(self) -> None:
+        """Speaks the initial startup greeting via TTS before entering listening loop."""
+        if not self.enable_greeting or not self.greeting_text or self.shutdown_event.is_set():
+            return
+        print(f"[Pipeline] Startup greeting: \"{self.greeting_text}\"")
+        self._set_ui_state(JarvisTrayState.SPEAKING, self.greeting_text)
+        try:
+            interrupted, next_query, speak_elapsed = self._speak_with_barge_in(
+                text=self.greeting_text,
+                trigger_mode="startup_greeting",
+            )
+            if interrupted and next_query:
+                print(f"[Pipeline] User interrupted startup greeting with command: \"{next_query}\"")
+                self.pending_user_text = next_query
+        except Exception as e:
+            print(f"[Pipeline Warning] Startup greeting TTS error: {e}")
+        finally:
+            self._set_ui_state(JarvisTrayState.LISTENING, "Listening for 'Hey Jarvis'...")
+
+    def _handle_wake_word_detected(self, score: float) -> None:
+        """
+        Callback invoked when the wake word 'Hey Jarvis' is detected.
+        Optionally speaks a brief audible acknowledgment ('Yes?') before speech recording begins.
+        """
+        print(f"\n[Pipeline] Wake word detected! (confidence: {score:.3f})")
+        if self.enable_wake_ack and self.wake_ack_text and not self.shutdown_event.is_set():
+            print(f"[Pipeline] Acknowledging wake word with: \"{self.wake_ack_text}\"")
+            self._set_ui_state(JarvisTrayState.SPEAKING, f"Speaking: \"{self.wake_ack_text}\"")
+            try:
+                speak(self.wake_ack_text, voice=self.voice, blocking=True)
+            except Exception as e:
+                print(f"[Pipeline Error] Failed to speak wake acknowledgment: {e}")
+            finally:
+                self._set_ui_state(JarvisTrayState.LISTENING, "Listening for command...")
+
+    def _speak_with_barge_in(
+        self,
+        text: str,
+        trigger_mode: str = "wake_word",
+    ) -> Tuple[bool, Optional[str], float]:
+        """
+        Speaks the given text via Piper TTS while monitoring microphone input in the
+        background for user speech interruption ("barge-in").
+
+        Redesign:
+        Instead of aborting playback immediately on microphone energy, playback
+        continues while speech is captured in the background.
+        Once the user pauses (~0.8s silence), Whisper transcribes the speech:
+        1. If acoustic noise, artifact, or empty: ignored, playback continues seamlessly.
+        2. If speaker echo of assistant voice: ignored, playback continues seamlessly.
+        3. If bare dismissal without 'Jarvis' (e.g. solitary 'stop', 'okay'): ignored to
+           prevent false interruptions from ambient chatter.
+        4. If confirmed Jarvis dismissal ('Jarvis stop', 'Jarvis okay', 'Stop Jarvis'):
+           aborts playback immediately, silently ends current response, returns (True, None, tts_duration).
+        5. If valid new command or question: aborts playback immediately, returns
+           (True, new_command, tts_duration) to chain directly into the next turn.
+
+        Args:
+            text: Text to speak.
+            trigger_mode: Calling context ('wake_word', 'conversation', or 'startup_greeting').
+
+        Returns:
+            Tuple of (interrupted: bool, next_user_text: Optional[str], tts_duration: float)
+        """
+        if not text or not text.strip():
+            return False, None, 0.0
+
+        if not self.enable_barge_in or self.detector is None:
+            speak_start = time.perf_counter()
+            speak(
+                text=text,
+                voice=self.voice,
+                blocking=True,
+                on_start_playback=lambda ttfa: print(f"[TTS] Playback started in {ttfa:.2f}s (TTFA)"),
+            )
+            tts_duration = time.perf_counter() - speak_start
+            return False, None, tts_duration
+
+        interrupt_event = threading.Event()
+        speak_start = time.perf_counter()
+        producer_error: List[Exception] = []
+
+        def tts_worker():
+            try:
+                speak(
+                    text=text,
+                    voice=self.voice,
+                    blocking=True,
+                    interrupt_event=interrupt_event,
+                    on_start_playback=lambda ttfa: print(f"[TTS] Playback started in {ttfa:.2f}s (TTFA)"),
+                )
+            except Exception as exc:
+                producer_error.append(exc)
+
+        tts_thread = threading.Thread(
+            target=tts_worker,
+            name="TTS_BargeInWorker",
+            daemon=True,
+        )
+
+        try:
+            self.detector.start_stream()
+        except Exception as stream_err:
+            if self.debug:
+                print(f"[DEBUG Barge-in] Failed to start input stream: {stream_err}")
+
+        # Drain residual audio in queue before playback begins
+        if hasattr(self.detector, "audio_queue") and hasattr(self.detector.audio_queue, "empty"):
+            while not self.detector.audio_queue.empty():
+                try:
+                    self.detector.audio_queue.get_nowait()
+                except Exception:
+                    break
+
+        tts_thread.start()
+
+        pre_roll_chunks = max(2, int(0.35 / CHUNK_DURATION))
+        pre_roll: collections.deque = collections.deque(maxlen=pre_roll_chunks)
+        consecutive_speech_chunks = 0
+        playback_begin = time.time()
+        grace_period = 0.25
+
+        collecting_speech = False
+        recorded_frames: List[np.ndarray] = []
+        silence_chunks = 0
+        record_start = 0.0
+        silence_limit_chunks = int(0.8 / CHUNK_DURATION)
+
+        while tts_thread.is_alive() or collecting_speech:
+            if self.shutdown_event.is_set():
+                interrupt_event.set()
+                break
+
+            try:
+                chunk = self.detector.audio_queue.get(timeout=0.04)
+            except Exception:
+                continue
+
+            if not isinstance(chunk, np.ndarray):
+                continue
+
+            chunk_rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+
+            if not collecting_speech:
+                pre_roll.append(chunk)
+
+                if time.time() - playback_begin < grace_period:
+                    continue
+
+                if self.debug:
+                    print(f"[DEBUG Barge-in] Mic RMS: {chunk_rms:6.1f} | Threshold: {self.barge_in_threshold:.1f}")
+
+                if chunk_rms >= self.barge_in_threshold:
+                    consecutive_speech_chunks += 1
+                    if consecutive_speech_chunks >= 2:
+                        print(
+                            f"\n[Barge-in] Speech sound detected during playback "
+                            f"(RMS: {chunk_rms:.1f} >= {self.barge_in_threshold:.1f}). Verifying speech..."
+                        )
+                        collecting_speech = True
+                        recorded_frames = list(pre_roll)
+                        silence_chunks = 0
+                        record_start = time.time()
+                else:
+                    consecutive_speech_chunks = max(0, consecutive_speech_chunks - 1)
+            else:
+                # Active speech collection while TTS continues playing
+                recorded_frames.append(chunk)
+
+                if chunk_rms < DEFAULT_SILENCE_RMS * 1.5:
+                    silence_chunks += 1
+                else:
+                    silence_chunks = 0
+
+                speech_elapsed = time.time() - record_start
+                speech_finished = (silence_chunks >= silence_limit_chunks) or (speech_elapsed > MAX_RECORDING_SECONDS)
+
+                if speech_finished:
+                    # User finished speaking. Transcribe to verify intent before aborting TTS
+                    AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                    timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+                    clip_path = AUDIO_CACHE_DIR / f"interruption_{timestamp_str}_{int(time.time() * 1000) % 1000}.wav"
+
+                    if recorded_frames:
+                        combined_audio = np.concatenate(recorded_frames).astype(np.int16)
+                    else:
+                        combined_audio = np.zeros(CHUNK_SAMPLES, dtype=np.int16)
+
+                    wavfile.write(str(clip_path), SAMPLE_RATE, combined_audio)
+
+                    interruption_text = ""
+                    try:
+                        stt_start = time.perf_counter()
+                        interruption_text = transcribe_audio(
+                            audio_path=str(clip_path.resolve()),
+                            model_size=self.whisper_model,
+                        )
+                        stt_elapsed = time.perf_counter() - stt_start
+                        print(f"[Barge-in STT] Transcribed in {stt_elapsed:.2f}s: \"{interruption_text}\"")
+                    except Exception as stt_err:
+                        print(f"[Barge-in Error] Transcription failed: {stt_err}")
+                        interruption_text = ""
+
+                    # Case A: Empty speech or acoustic noise/artifact
+                    if not interruption_text or not interruption_text.strip() or is_noise_or_wake_word_artifact(interruption_text):
+                        print(f"[Barge-in] Sound was noise/artifact (\"{interruption_text.strip()}\"). Continuing playback.")
+                        collecting_speech = False
+                        recorded_frames = []
+                        consecutive_speech_chunks = 0
+                        silence_chunks = 0
+                        pre_roll.clear()
+                        continue
+
+                    # Case B: Speaker echo of Jarvis's own TTS output
+                    if is_speaker_echo(interruption_text, text):
+                        print(f"[Barge-in] Detected speaker echo of assistant voice (\"{interruption_text.strip()}\"). Continuing playback.")
+                        collecting_speech = False
+                        recorded_frames = []
+                        consecutive_speech_chunks = 0
+                        silence_chunks = 0
+                        pre_roll.clear()
+                        continue
+
+                    # Case C: Confirmed Jarvis dismissal ("Jarvis stop", "Jarvis okay", etc.)
+                    if is_jarvis_dismissal(interruption_text, self.dismissal_phrases):
+                        print(f"[Barge-in] Confirmed Jarvis dismissal: \"{interruption_text}\". Aborting TTS playback.")
+                        interrupt_event.set()
+                        tts_thread.join(timeout=1.0)
+                        tts_duration = time.perf_counter() - speak_start
+                        return True, None, tts_duration
+
+                    # Case D: Bare dismissal without "Jarvis" (e.g. solitary "stop", "okay")
+                    if is_dismissal_phrase(interruption_text, self.dismissal_phrases):
+                        print(
+                            f"[Barge-in] Dismissal word \"{interruption_text}\" lacked required \"Jarvis\" prefix. "
+                            "Ignoring to prevent accidental interruption."
+                        )
+                        collecting_speech = False
+                        recorded_frames = []
+                        consecutive_speech_chunks = 0
+                        silence_chunks = 0
+                        pre_roll.clear()
+                        continue
+
+                    # Case E: Valid new command or question!
+                    print(f"[Barge-in] Valid new command received during playback: \"{interruption_text}\". Aborting TTS and chaining.")
+                    interrupt_event.set()
+                    tts_thread.join(timeout=1.0)
+                    tts_duration = time.perf_counter() - speak_start
+                    return True, interruption_text, tts_duration
+
+        tts_thread.join(timeout=1.0)
+        tts_duration = time.perf_counter() - speak_start
+
+        if producer_error:
+            raise producer_error[0]
+
+        return False, None, tts_duration
+
+    def run_turn(self, pending_user_text: Optional[str] = None) -> bool:
         """
         Executes a single end-to-end voice pipeline turn:
         Listening -> Heard wake word -> Transcribing -> Thinking -> Speaking -> Listening again.
+
+        Supports pending_user_text or self.pending_user_text from barge-in interruptions,
+        bypassing the wake-word detection stage when the user already spoke their next command.
 
         Returns True if the loop should continue, False if shutdown was requested.
         """
         if self.shutdown_event.is_set():
             return False
 
-        # ---------------------------------------------------------------------
-        # STAGE 1: Wake Word Listening
-        # ---------------------------------------------------------------------
-        print("\n" + "-" * 60)
-        print("[Pipeline] Stage 1: LISTENING for 'Hey Jarvis' (hands-free)...")
-        self._set_tray_state(JarvisTrayState.LISTENING, "Listening for 'Hey Jarvis'...")
+        user_text = pending_user_text or self.pending_user_text
+        self.pending_user_text = None
+        stt_elapsed = 0.0
 
-        try:
-            audio_clip_path = self.detector.listen_and_record(
-                on_wake_word_detected=lambda score: print(
-                    f"\n[Pipeline] Wake word detected! (confidence: {score:.3f})"
-                ),
-                stop_event=self.shutdown_event,
-            )
-        except Exception as e:
-            if self.shutdown_event.is_set():
+        if not user_text:
+            # ---------------------------------------------------------------------
+            # STAGE 1: Wake Word Listening
+            # ---------------------------------------------------------------------
+            print("\n" + "-" * 60)
+            print("[Pipeline] Stage 1: LISTENING for 'Hey Jarvis' (hands-free)...")
+            self._set_tray_state(JarvisTrayState.LISTENING, "Listening for 'Hey Jarvis'...")
+
+            try:
+                audio_clip_path = self.detector.listen_and_record(
+                    on_wake_word_detected=self._handle_wake_word_detected,
+                    stop_event=self.shutdown_event,
+                )
+            except Exception as e:
+                if self.shutdown_event.is_set():
+                    return False
+                print(f"[Pipeline Error] Wake word detection error: {e}")
+                self._set_tray_state(JarvisTrayState.ERROR, "Wake Word Error")
+                time.sleep(1.0)
+                return True
+
+            if self.shutdown_event.is_set() or not audio_clip_path:
                 return False
-            print(f"[Pipeline Error] Wake word detection error: {e}")
-            self._set_tray_state(JarvisTrayState.ERROR, "Wake Word Error")
-            time.sleep(1.0)
-            return True
 
-        if self.shutdown_event.is_set() or not audio_clip_path:
-            return False
+            # ---------------------------------------------------------------------
+            # STAGE 2: Transcribing Speech (STT)
+            # ---------------------------------------------------------------------
+            print("[Pipeline] Stage 2: TRANSCRIBING speech with Whisper...")
+            self._set_tray_state(JarvisTrayState.PROCESSING, "Transcribing user speech...")
 
-        # ---------------------------------------------------------------------
-        # STAGE 2: Transcribing Speech (STT)
-        # ---------------------------------------------------------------------
-        print("[Pipeline] Stage 2: TRANSCRIBING speech with Whisper...")
-        self._set_tray_state(JarvisTrayState.PROCESSING, "Transcribing user speech...")
+            try:
+                stt_start = time.perf_counter()
+                user_text = transcribe_audio(
+                    audio_path=audio_clip_path,
+                    model_size=self.whisper_model,
+                )
+                stt_elapsed = time.perf_counter() - stt_start
+                print(f"[STT] Transcribed in {stt_elapsed:.2f}s: \"{user_text}\"")
+            except Exception as e:
+                stt_elapsed = time.perf_counter() - stt_start if "stt_start" in locals() else 0.0
+                print(f"[Pipeline Error] STT transcription failed: {e}")
+                self._set_tray_state(JarvisTrayState.ERROR, f"STT Error: {e}")
+                self._log_turn(
+                    user_text="",
+                    assistant_response="",
+                    tools_called=[],
+                    stt_seconds=stt_elapsed,
+                    brain_seconds=0.0,
+                    tts_seconds=0.0,
+                    total_seconds=stt_elapsed,
+                    success=False,
+                    trigger_mode="wake_word",
+                )
+                time.sleep(1.0)
+                return True
 
-        user_text = ""
-        try:
-            stt_start = time.perf_counter()
-            user_text = transcribe_audio(
-                audio_path=audio_clip_path,
-                model_size=self.whisper_model,
-            )
-            stt_elapsed = time.perf_counter() - stt_start
-            print(f"[STT] Transcribed in {stt_elapsed:.2f}s: \"{user_text}\"")
-        except Exception as e:
-            print(f"[Pipeline Error] STT transcription failed: {e}")
-            self._set_tray_state(JarvisTrayState.ERROR, f"STT Error: {e}")
-            time.sleep(1.0)
-            return True
-
-        # Check for empty or silent utterance
-        if not user_text or not user_text.strip():
-            print("[Pipeline] No speech recognized in audio clip. Returning to listening mode.")
-            return True
+            # Check for empty or silent utterance
+            if not user_text or not user_text.strip():
+                print("[Pipeline] No speech recognized in audio clip. Returning to listening mode.")
+                return True
+        else:
+            print(f"\n[Pipeline] Direct turn received from speech interruption: \"{user_text}\"")
 
         print(f"\nUser > {user_text}")
 
@@ -395,6 +887,9 @@ class VoiceAssistantOrchestrator:
         self._set_tray_state(JarvisTrayState.PROCESSING, f"Thinking about: {user_text[:25]}...")
 
         response_text = ""
+        agent_elapsed = 0.0
+        turn_tools: List[str] = []
+        history_len_before = len(self.conversation_history)
         try:
             agent_start = time.perf_counter()
             response_text, self.conversation_history = run_agent(
@@ -409,9 +904,22 @@ class VoiceAssistantOrchestrator:
             )
             agent_elapsed = time.perf_counter() - agent_start
             print(f"[Brain] Response generated in {agent_elapsed:.2f}s")
+            turn_tools = extract_tools_from_messages(self.conversation_history[history_len_before:])
         except Exception as e:
+            agent_elapsed = time.perf_counter() - agent_start if "agent_start" in locals() else 0.0
             print(f"[Pipeline Error] Agent execution error: {e}")
             self._set_tray_state(JarvisTrayState.ERROR, f"Agent Error: {e}")
+            self._log_turn(
+                user_text=user_text,
+                assistant_response="",
+                tools_called=[],
+                stt_seconds=stt_elapsed,
+                brain_seconds=agent_elapsed,
+                tts_seconds=0.0,
+                total_seconds=stt_elapsed + agent_elapsed,
+                success=False,
+                trigger_mode="wake_word",
+            )
             time.sleep(1.0)
             return True
 
@@ -420,26 +928,66 @@ class VoiceAssistantOrchestrator:
         print(f"\nJarvis > {response_text}\n")
 
         # ---------------------------------------------------------------------
-        # STAGE 4: Speaking Response Aloud (Piper TTS)
+        # STAGE 4: Speaking Response Aloud (Piper TTS with Barge-In)
         # ---------------------------------------------------------------------
+        speak_elapsed = 0.0
+        interrupted = False
+        next_user_query: Optional[str] = None
         if response_text and response_text.strip():
             print(f"[Pipeline] Stage 4: SPEAKING response aloud (voice: '{self.voice}')...")
             self._set_tray_state(JarvisTrayState.SPEAKING, "Speaking response aloud...")
 
             try:
-                speak_start = time.perf_counter()
-                speak(
+                interrupted, next_user_query, speak_elapsed = self._speak_with_barge_in(
                     text=response_text,
-                    voice=self.voice,
-                    blocking=True,
-                    on_start_playback=lambda ttfa: print(f"[TTS] Playback started in {ttfa:.2f}s (TTFA)"),
+                    trigger_mode="wake_word",
                 )
-                speak_elapsed = time.perf_counter() - speak_start
-                print(f"[TTS] Finished speaking in {speak_elapsed:.2f}s.")
+                if interrupted:
+                    print(f"[TTS] Playback interrupted after {speak_elapsed:.2f}s.")
+                else:
+                    print(f"[TTS] Finished speaking in {speak_elapsed:.2f}s.")
             except Exception as e:
+                speak_elapsed = time.perf_counter() - speak_start if "speak_start" in locals() else 0.0
                 print(f"[Pipeline Error] TTS playback error: {e}")
                 self._set_tray_state(JarvisTrayState.ERROR, f"TTS Error: {e}")
+                self._log_turn(
+                    user_text=user_text,
+                    assistant_response=response_text,
+                    tools_called=turn_tools,
+                    stt_seconds=stt_elapsed,
+                    brain_seconds=agent_elapsed,
+                    tts_seconds=speak_elapsed,
+                    total_seconds=stt_elapsed + agent_elapsed + speak_elapsed,
+                    success=False,
+                    trigger_mode="wake_word",
+                )
                 time.sleep(1.0)
+                return True
+
+        # Log completed wake-word turn
+        self._log_turn(
+            user_text=user_text,
+            assistant_response=response_text,
+            tools_called=turn_tools,
+            stt_seconds=stt_elapsed,
+            brain_seconds=agent_elapsed,
+            tts_seconds=speak_elapsed,
+            total_seconds=stt_elapsed + agent_elapsed + speak_elapsed,
+            success=True,
+            trigger_mode="wake_word",
+        )
+
+        # Handle speech interruption outcome
+        if interrupted:
+            if next_user_query:
+                # User spoke a new question/command during playback!
+                # Chain directly to the next turn without asking for wake-word or listening again.
+                self.pending_user_text = next_user_query
+                return True
+            else:
+                # User spoke a dismissal phrase ("stop", "got it", "okay", etc.)
+                # Silently end current response and return to standby listening.
+                self._set_tray_state(JarvisTrayState.LISTENING, "Listening for 'Hey Jarvis'...")
                 return True
 
         # ---------------------------------------------------------------------
@@ -453,51 +1001,70 @@ class VoiceAssistantOrchestrator:
             print(f"  - Times out quietly after {self.conversation_timeout:.1f}s of silence (safety net).")
             print("=" * 60)
 
+            conv_pending_text: Optional[str] = None
             while not self.shutdown_event.is_set():
-                self._set_tray_state(
-                    JarvisTrayState.CONVERSATION,
-                    "Active Conversation (Listening hands-free)...",
-                )
-                try:
-                    followup_clip_path = self.detector.record_utterance(
-                        stop_event=self.shutdown_event,
-                        speech_timeout=self.conversation_timeout,
+                if conv_pending_text is not None:
+                    followup_text = conv_pending_text
+                    conv_pending_text = None
+                    followup_stt_elapsed = 0.0
+                else:
+                    self._set_tray_state(
+                        JarvisTrayState.CONVERSATION,
+                        "Active Conversation (Listening hands-free)...",
                     )
-                except Exception as e:
-                    print(f"[Conversation Error] Error capturing audio: {e}")
-                    break
+                    try:
+                        followup_clip_path = self.detector.record_utterance(
+                            stop_event=self.shutdown_event,
+                            speech_timeout=self.conversation_timeout,
+                        )
+                    except Exception as e:
+                        print(f"[Conversation Error] Error capturing audio: {e}")
+                        break
 
-                if self.shutdown_event.is_set():
-                    return False
+                    if self.shutdown_event.is_set():
+                        return False
 
-                # Check for silence timeout (no speech detected within window)
-                if not followup_clip_path:
-                    print(
-                        f"[Conversation] Silence timeout ({self.conversation_timeout:.1f}s). "
-                        "Quietly reverting to wake-word standby (conversation history retained)."
-                    )
-                    break
+                    # Check for silence timeout (no speech detected within window)
+                    if not followup_clip_path:
+                        print(
+                            f"[Conversation] Silence timeout ({self.conversation_timeout:.1f}s). "
+                            "Quietly reverting to wake-word standby (conversation history retained)."
+                        )
+                        break
 
-                # STT Transcribe
-                self._set_tray_state(JarvisTrayState.PROCESSING, "Transcribing user speech...")
-                followup_text = ""
-                try:
-                    followup_start = time.perf_counter()
-                    followup_text = transcribe_audio(
-                        audio_path=followup_clip_path,
-                        model_size=self.whisper_model,
-                    )
-                    followup_stt_elapsed = time.perf_counter() - followup_start
-                    print(f"[STT] Transcribed in {followup_stt_elapsed:.2f}s: \"{followup_text}\"")
-                except Exception as e:
-                    print(f"[Conversation Error] STT failed: {e}")
-                    self._set_tray_state(JarvisTrayState.ERROR, f"STT Error: {e}")
-                    time.sleep(1.0)
-                    continue
+                    # STT Transcribe
+                    self._set_tray_state(JarvisTrayState.PROCESSING, "Transcribing user speech...")
+                    followup_text = ""
+                    followup_stt_elapsed = 0.0
+                    try:
+                        followup_start = time.perf_counter()
+                        followup_text = transcribe_audio(
+                            audio_path=followup_clip_path,
+                            model_size=self.whisper_model,
+                        )
+                        followup_stt_elapsed = time.perf_counter() - followup_start
+                        print(f"[STT] Transcribed in {followup_stt_elapsed:.2f}s: \"{followup_text}\"")
+                    except Exception as e:
+                        followup_stt_elapsed = time.perf_counter() - followup_start if "followup_start" in locals() else 0.0
+                        print(f"[Conversation Error] STT failed: {e}")
+                        self._set_tray_state(JarvisTrayState.ERROR, f"STT Error: {e}")
+                        self._log_turn(
+                            user_text="",
+                            assistant_response="",
+                            tools_called=[],
+                            stt_seconds=followup_stt_elapsed,
+                            brain_seconds=0.0,
+                            tts_seconds=0.0,
+                            total_seconds=followup_stt_elapsed,
+                            success=False,
+                            trigger_mode="conversation",
+                        )
+                        time.sleep(1.0)
+                        continue
 
-                if not followup_text or not followup_text.strip():
-                    print("[Conversation] Empty utterance. Continuing active listening...")
-                    continue
+                    if not followup_text or not followup_text.strip():
+                        print("[Conversation] Empty utterance. Continuing active listening...")
+                        continue
 
                 print(f"\nUser (Conversation) > {followup_text}")
 
@@ -510,6 +1077,17 @@ class VoiceAssistantOrchestrator:
                     except Exception as tts_err:
                         if self.debug:
                             print(f"[DEBUG] Stop phrase TTS error: {tts_err}")
+                    self._log_turn(
+                        user_text=followup_text,
+                        assistant_response="Goodbye!",
+                        tools_called=[],
+                        stt_seconds=followup_stt_elapsed,
+                        brain_seconds=0.0,
+                        tts_seconds=0.0,
+                        total_seconds=followup_stt_elapsed,
+                        success=True,
+                        trigger_mode="conversation",
+                    )
                     break
 
                 # Filter ambient noise or solitary wake-word artifacts in conversation mode
@@ -523,6 +1101,9 @@ class VoiceAssistantOrchestrator:
                 # Brain & LangGraph Agent
                 self._set_tray_state(JarvisTrayState.PROCESSING, f"Thinking about: {followup_text[:25]}...")
                 followup_resp = ""
+                agent_elapsed = 0.0
+                conv_turn_tools: List[str] = []
+                history_len_before = len(self.conversation_history)
                 try:
                     agent_start = time.perf_counter()
                     followup_resp, self.conversation_history = run_agent(
@@ -537,32 +1118,91 @@ class VoiceAssistantOrchestrator:
                     )
                     agent_elapsed = time.perf_counter() - agent_start
                     print(f"[Brain] Response generated in {agent_elapsed:.2f}s")
+                    conv_turn_tools = extract_tools_from_messages(self.conversation_history[history_len_before:])
                 except Exception as e:
+                    agent_elapsed = time.perf_counter() - agent_start if "agent_start" in locals() else 0.0
                     print(f"[Conversation Error] Agent execution error: {e}")
                     self._set_tray_state(JarvisTrayState.ERROR, f"Agent Error: {e}")
+                    self._log_turn(
+                        user_text=followup_text,
+                        assistant_response="",
+                        tools_called=[],
+                        stt_seconds=followup_stt_elapsed,
+                        brain_seconds=agent_elapsed,
+                        tts_seconds=0.0,
+                        total_seconds=followup_stt_elapsed + agent_elapsed,
+                        success=False,
+                        trigger_mode="conversation",
+                    )
                     time.sleep(1.0)
                     continue
 
                 followup_resp = sanitize_speech_text(followup_resp)
                 print(f"\nJarvis (Conversation) > {followup_resp}\n")
 
-                # Speaking response aloud (Piper TTS)
+                # Speaking response aloud (Piper TTS with barge-in)
+                speak_elapsed = 0.0
+                conv_interrupted = False
+                next_conv_query: Optional[str] = None
                 if followup_resp and followup_resp.strip():
                     self._set_tray_state(JarvisTrayState.SPEAKING, "Speaking response aloud...")
                     try:
-                        speak_start = time.perf_counter()
-                        speak(
+                        conv_interrupted, next_conv_query, speak_elapsed = self._speak_with_barge_in(
                             text=followup_resp,
-                            voice=self.voice,
-                            blocking=True,
-                            on_start_playback=lambda ttfa: print(f"[TTS] Playback started in {ttfa:.2f}s (TTFA)"),
+                            trigger_mode="conversation",
                         )
-                        speak_elapsed = time.perf_counter() - speak_start
-                        print(f"[TTS] Finished speaking in {speak_elapsed:.2f}s.")
+                        if conv_interrupted:
+                            print(f"[TTS] Conversation playback interrupted after {speak_elapsed:.2f}s.")
+                        else:
+                            print(f"[TTS] Finished speaking in {speak_elapsed:.2f}s.")
                     except Exception as e:
+                        speak_elapsed = time.perf_counter() - speak_start if "speak_start" in locals() else 0.0
                         print(f"[Conversation Error] TTS playback error: {e}")
                         self._set_tray_state(JarvisTrayState.ERROR, f"TTS Error: {e}")
+                        self._log_turn(
+                            user_text=followup_text,
+                            assistant_response=followup_resp,
+                            tools_called=conv_turn_tools,
+                            stt_seconds=followup_stt_elapsed,
+                            brain_seconds=agent_elapsed,
+                            tts_seconds=speak_elapsed,
+                            total_seconds=followup_stt_elapsed + agent_elapsed + speak_elapsed,
+                            success=False,
+                            trigger_mode="conversation",
+                        )
                         time.sleep(1.0)
+                        continue
+
+                # Log completed conversation-mode turn
+                self._log_turn(
+                    user_text=followup_text,
+                    assistant_response=followup_resp,
+                    tools_called=conv_turn_tools,
+                    stt_seconds=followup_stt_elapsed,
+                    brain_seconds=agent_elapsed,
+                    tts_seconds=speak_elapsed,
+                    total_seconds=followup_stt_elapsed + agent_elapsed + speak_elapsed,
+                    success=True,
+                    trigger_mode="conversation",
+                )
+
+                if conv_interrupted:
+                    if next_conv_query:
+                        if is_stop_phrase(next_conv_query, self.stop_phrases):
+                            print(f"[Conversation] Stop phrase detected during interruption ('{next_conv_query}'). Exiting conversation mode.")
+                            self._set_tray_state(JarvisTrayState.SPEAKING, "Goodbye!")
+                            try:
+                                speak("Goodbye!", voice=self.voice, blocking=True)
+                            except Exception:
+                                pass
+                            break
+                        # Directly chain to next conversation turn without re-recording
+                        conv_pending_text = next_conv_query
+                        continue
+                    else:
+                        # Dismissal phrase: silently end response and continue hands-free listening
+                        print("[Conversation] Interruption dismissal detected. Continuing hands-free listening...")
+                        continue
 
         print("[Pipeline] Reverting to wake word listening.")
         return True
@@ -570,6 +1210,9 @@ class VoiceAssistantOrchestrator:
     def run(self) -> None:
         """Main continuous execution loop."""
         self.initialize()
+
+        # Startup greeting
+        self._speak_startup_greeting()
 
         print("[Pipeline] System ready and listening for 'Hey Jarvis'. Press Ctrl+C to stop.")
         try:
@@ -620,6 +1263,15 @@ class VoiceAssistantOrchestrator:
             except Exception as e:
                 if self.debug:
                     print(f"[DEBUG] Error stopping orb overlay: {e}")
+
+        # Flush and shutdown interaction logging
+        if self.enable_logging:
+            try:
+                flush_logging(timeout=2.0)
+                shutdown_logging(timeout=2.0)
+            except Exception as e:
+                if self.debug:
+                    print(f"[DEBUG] Error shutting down logging: {e}")
 
         print("[Orchestrator] Local Jarvis shutdown complete.")
 
@@ -710,9 +1362,53 @@ def main():
         help="Disable ChromaDB persistent vector memory",
     )
     parser.add_argument(
+        "--no-logging",
+        action="store_true",
+        help="Disable interaction logging to SQLite database",
+    )
+    parser.add_argument(
+        "--no-greeting",
+        action="store_true",
+        help="Disable spoken startup greeting on launch",
+    )
+    parser.add_argument(
+        "--greeting-text",
+        type=str,
+        default="Hello! I'm ready, how can I help you today?",
+        help="Custom spoken text for the startup greeting",
+    )
+    parser.add_argument(
+        "--no-barge-in",
+        action="store_true",
+        help="Disable speech interruption ('barge-in') during TTS playback",
+    )
+    parser.add_argument(
+        "--barge-in-threshold",
+        type=float,
+        default=850.0,
+        help="Microphone RMS energy threshold for detecting speech interruption during playback (default: 850.0)",
+    )
+    parser.add_argument(
+        "--dismissal-phrases",
+        type=str,
+        default=None,
+        help="Comma-separated list of short dismissal phrases that cancel TTS without starting a new turn",
+    )
+    parser.add_argument(
+        "--no-wake-ack",
+        action="store_true",
+        help="Disable audible acknowledgment ('Yes?') spoken immediately after wake word detection",
+    )
+    parser.add_argument(
+        "--wake-ack-text",
+        type=str,
+        default="Yes?",
+        help="Custom short spoken text for the wake-word acknowledgment (default: 'Yes?')",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable verbose debug logging for wake word detection",
+        help="Enable verbose debug logging for wake word and barge-in detection",
     )
     parser.add_argument(
         "--list-launchable-apps",
@@ -742,10 +1438,19 @@ def main():
     enable_tray = not args.no_tray
     enable_orb = not args.no_orb
     enable_memory = not args.no_memory
+    enable_logging = not args.no_logging
     continuous_mode = not args.no_continuous
+    enable_greeting = not args.no_greeting
+    enable_barge_in = not args.no_barge_in
+    enable_wake_ack = not args.no_wake_ack
     stop_phrases_list = (
         [p.strip() for p in args.stop_phrases.split(",") if p.strip()]
         if args.stop_phrases
+        else None
+    )
+    dismissal_phrases_list = (
+        [p.strip() for p in args.dismissal_phrases.split(",") if p.strip()]
+        if args.dismissal_phrases
         else None
     )
 
@@ -756,8 +1461,15 @@ def main():
         enable_tray=enable_tray,
         enable_orb=enable_orb,
         enable_memory=enable_memory,
+        enable_logging=enable_logging,
         continuous_mode=continuous_mode,
         conversation_timeout=args.conversation_timeout,
+        enable_greeting=enable_greeting,
+        greeting_text=args.greeting_text,
+        enable_barge_in=enable_barge_in,
+        barge_in_threshold=args.barge_in_threshold,
+        enable_wake_ack=enable_wake_ack,
+        wake_ack_text=args.wake_ack_text,
     )
 
     orchestrator = VoiceAssistantOrchestrator(
@@ -772,9 +1484,17 @@ def main():
         enable_tray=enable_tray,
         enable_orb=enable_orb,
         enable_memory=enable_memory,
+        enable_logging=enable_logging,
         continuous_mode=continuous_mode,
         conversation_timeout=args.conversation_timeout,
         stop_phrases=stop_phrases_list,
+        enable_greeting=enable_greeting,
+        greeting_text=args.greeting_text,
+        enable_barge_in=enable_barge_in,
+        barge_in_threshold=args.barge_in_threshold,
+        dismissal_phrases=dismissal_phrases_list,
+        enable_wake_ack=enable_wake_ack,
+        wake_ack_text=args.wake_ack_text,
         debug=args.debug,
     )
 
