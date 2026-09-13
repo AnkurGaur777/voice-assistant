@@ -25,7 +25,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from src.agent.tools.clipboard import read_clipboard, summarize_clipboard
 from src.agent.tools.datetime_tool import get_current_datetime
-from src.agent.tools.desktop import open_application, type_text
+from src.agent.tools.desktop import open_application, press_enter_key, type_text
 from src.agent.tools.reminders import list_reminders, set_reminder
 from src.agent.tools.sandbox import run_python
 from src.agent.tools.web_search import web_search
@@ -48,6 +48,7 @@ DEFAULT_TOOLS = [
     summarize_clipboard,
     open_application,
     type_text,
+    press_enter_key,
     run_python,
     set_reminder,
     list_reminders,
@@ -74,9 +75,10 @@ DEFAULT_SYSTEM_PROMPT = (
     "- NEVER NARRATE TOOL CALLS OR OUTPUT RAW JSON: NEVER output narration phrases like \"I'll call the `web_search` tool\" or \"I will run python\" and NEVER output raw JSON tool-calling blocks like {\"name\": ...} in your conversational text. To call a tool, invoke it through the tool calling interface directly. In your final text response to the user, speak naturally in plain conversational English without mentioning tool names, parameters, or code syntax.\n\n"
     "CRITICAL TOOL INSTRUCTIONS:\n"
     "- `get_current_datetime`: Call this tool for any questions regarding the current date, time, day of the week, month, or year. Always use get_current_datetime (never web_search) for date or time queries.\n"
-    "- When `type_text` is the tool executed: In your final response, you MUST state the EXACT window name reported in the tool result "
+    "- When `type_text` or `press_enter_key` is executed: In your final response, you MUST state the EXACT window name reported in the tool result "
     "(e.g. if the tool result mentions 'Windows PowerShell', you must report 'Windows PowerShell'), "
-    "even if the typing was cancelled, rejected, or aborted by the user (e.g. 'Typing was cancelled into Windows PowerShell'). "
+    "even if the action was cancelled, rejected, or aborted by the user (e.g. 'Typing was cancelled into Windows PowerShell'). "
+    "If the user asks to type text and send it or press enter, call `type_text` with `press_enter=True`. "
     "NEVER assume, guess, or invent the window name (e.g. do NOT say 'Notepad' if the tool reported 'Windows PowerShell').\n"
     "- When a tool returns an error (starts with 'Error:'), you MUST identify the SPECIFIC error type and cause reported by the tool, "
     "and quote or closely paraphrase the exact reason. NEVER use a generic 'stopped for exceeding the time limit' explanation unless the error is ACTUALLY an execution timeout.\n"

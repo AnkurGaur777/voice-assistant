@@ -28,6 +28,8 @@ class TestTrayApp(unittest.TestCase):
         states = [
             JarvisTrayState.LISTENING,
             JarvisTrayState.IDLE,
+            JarvisTrayState.CONVERSATION,
+            JarvisTrayState.CONVERSATION_ACTIVE,
             JarvisTrayState.PROCESSING,
             JarvisTrayState.SPEAKING,
             JarvisTrayState.ERROR,
@@ -44,6 +46,9 @@ class TestTrayApp(unittest.TestCase):
         """Verifies that set_state updates the current_state property cleanly."""
         app = JarvisTrayApp()
         self.assertEqual(app.current_state, JarvisTrayState.LISTENING)
+
+        app.set_state(JarvisTrayState.CONVERSATION)
+        self.assertEqual(app.current_state, JarvisTrayState.CONVERSATION)
 
         app.set_state(JarvisTrayState.PROCESSING)
         self.assertEqual(app.current_state, JarvisTrayState.PROCESSING)

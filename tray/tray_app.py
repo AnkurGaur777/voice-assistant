@@ -25,6 +25,8 @@ import pystray
 class JarvisTrayState(str, Enum):
     LISTENING = "listening"
     IDLE = "idle"
+    CONVERSATION = "conversation"
+    CONVERSATION_ACTIVE = "conversation_active"
     PROCESSING = "processing"
     SPEAKING = "speaking"
     ERROR = "error"
@@ -34,6 +36,8 @@ class JarvisTrayState(str, Enum):
 STATE_DESCRIPTIONS: Dict[str, str] = {
     JarvisTrayState.LISTENING: "Listening for 'Hey Jarvis'...",
     JarvisTrayState.IDLE: "Idle (Listening)...",
+    JarvisTrayState.CONVERSATION: "Active Conversation (Listening hands-free)...",
+    JarvisTrayState.CONVERSATION_ACTIVE: "Active Conversation (Listening hands-free)...",
     JarvisTrayState.PROCESSING: "Processing (Transcribing / Thinking)...",
     JarvisTrayState.SPEAKING: "Speaking response...",
     JarvisTrayState.ERROR: "Error encountered",
@@ -65,6 +69,17 @@ def create_state_icon(state: str, size: int = 64) -> Image.Image:
         draw.arc([cx - 8, cy - 6, cx + 8, cy + 6], start=0, end=180, fill=(255, 255, 255, 255), width=2)
         draw.line([cx, cy + 6, cx, cy + 12], fill=(255, 255, 255, 255), width=2)
         draw.line([cx - 6, cy + 12, cx + 6, cy + 12], fill=(255, 255, 255, 255), width=2)
+    elif state_norm in (JarvisTrayState.CONVERSATION.value, JarvisTrayState.CONVERSATION_ACTIVE.value):
+        # Vibrant Purple / Violet circle for active multi-turn conversation
+        bg_color = (156, 39, 176, 255)
+        draw.ellipse(bbox, fill=bg_color)
+        # Main speech bubble
+        draw.rounded_rectangle([cx - 11, cy - 10, cx + 11, cy + 4], radius=4, fill=(255, 255, 255, 255))
+        # Bubble tail
+        draw.polygon([(cx - 7, cy + 3), (cx - 2, cy + 3), (cx - 9, cy + 9)], fill=(255, 255, 255, 255))
+        # 3 inner conversation dots in bubble
+        for offset in (-5, 0, 5):
+            draw.ellipse([cx + offset - 1, cy - 4, cx + offset + 1, cy - 2], fill=bg_color)
     elif state_norm == JarvisTrayState.PROCESSING.value:
         # Amber / Orange circle
         bg_color = (255, 145, 0, 255)

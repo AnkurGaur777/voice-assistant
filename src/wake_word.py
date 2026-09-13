@@ -376,6 +376,95 @@ class WakeWordDetector:
 
         return abs_path
 
+    def record_utterance(
+        self,
+        stop_event: Optional[threading.Event] = None,
+        speech_timeout: float = 6.0,
+        max_duration: float = MAX_RECORDING_SECONDS,
+    ) -> Optional[str]:
+        """
+        Directly records user speech without waiting for a wake word.
+        Used for continuous conversation mode.
+
+        Waits up to `speech_timeout` seconds for user speech onset.
+        If no speech is detected within `speech_timeout`, returns None (silence timeout).
+        Once speech begins, records until ~1 second of continuous silence (VAD)
+        and saves the utterance to a timestamped .wav file.
+
+        :param stop_event: Optional threading.Event to signal termination.
+        :param speech_timeout: Seconds of initial silence before timing out back to standby.
+        :param max_duration: Hard safety limit in seconds.
+        :return: Absolute path to saved .wav clip, or None if timed out or cancelled.
+        """
+        self.start_stream()
+
+        # Drain any residual audio frames in the queue (e.g. from recent TTS playback)
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        print(f"[Conversation] Listening hands-free for next utterance (timeout: {speech_timeout:.1f}s)...")
+
+        recorded_frames: List[np.ndarray] = []
+        has_user_started_speaking = False
+        silence_chunk_count = 0
+        record_start_time = time.time()
+        speech_energy_threshold = DEFAULT_SILENCE_RMS
+        ambient_energies: Deque[float] = collections.deque(maxlen=20)
+
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                return None
+            try:
+                chunk = self.audio_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            chunk_rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
+            elapsed = time.time() - record_start_time
+
+            if not has_user_started_speaking:
+                ambient_energies.append(chunk_rms)
+                if len(ambient_energies) > 5:
+                    avg_ambient = float(np.median(ambient_energies))
+                    speech_energy_threshold = max(DEFAULT_SILENCE_RMS, avg_ambient * 2.2)
+
+                if chunk_rms >= speech_energy_threshold:
+                    has_user_started_speaking = True
+                    silence_chunk_count = 0
+                    recorded_frames.append(chunk)
+                elif elapsed > speech_timeout:
+                    print(f"[Conversation] No speech detected within {speech_timeout:.1f}s timeout.")
+                    return None
+            else:
+                recorded_frames.append(chunk)
+                if chunk_rms >= speech_energy_threshold:
+                    silence_chunk_count = 0
+                else:
+                    silence_chunk_count += 1
+                    if silence_chunk_count >= SILENCE_CHUNKS:
+                        # ~1 second continuous silence detected post-speech
+                        break
+
+            if elapsed >= max_duration:
+                print(f"[Conversation] Reached maximum recording limit ({max_duration}s).")
+                break
+
+        if not recorded_frames or not has_user_started_speaking:
+            return None
+
+        timestamp_str = time.strftime("%Y%m%d_%H%M%S")
+        output_filename = f"clip_{timestamp_str}_{int(time.time() * 1000) % 1000}.wav"
+        output_path = AUDIO_CACHE_DIR / output_filename
+
+        combined_audio = np.concatenate(recorded_frames).astype(np.int16)
+        wavfile.write(str(output_path), SAMPLE_RATE, combined_audio)
+        abs_path = str(output_path.resolve())
+        print(f"Saved audio clip to: {abs_path}")
+        return abs_path
+
 
 def main():
     """CLI entrypoint supporting --list-devices, --debug, and custom device/threshold."""
