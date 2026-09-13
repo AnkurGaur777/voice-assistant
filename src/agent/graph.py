@@ -25,7 +25,13 @@ from langgraph.prebuilt import ToolNode, tools_condition
 
 from src.agent.tools.clipboard import read_clipboard, summarize_clipboard
 from src.agent.tools.datetime_tool import get_current_datetime
-from src.agent.tools.desktop import open_application, press_enter_key, type_text
+from src.agent.tools.desktop import (
+    find_and_click_element,
+    open_application,
+    press_enter_key,
+    scroll_window,
+    type_text,
+)
 from src.agent.tools.reminders import list_reminders, set_reminder
 from src.agent.tools.sandbox import run_python
 from src.agent.tools.web_search import web_search
@@ -47,6 +53,8 @@ DEFAULT_TOOLS = [
     read_clipboard,
     summarize_clipboard,
     open_application,
+    find_and_click_element,
+    scroll_window,
     type_text,
     press_enter_key,
     run_python,
@@ -66,6 +74,14 @@ DEFAULT_SYSTEM_PROMPT = (
     "- APPLICATION & DESKTOP ACTIONS: ALWAYS invoke the `open_application` tool whenever the user asks to open, launch, or start an application "
     "(e.g. \"open notepad\" -> invoke `open_application(app_name=\"notepad\")`, \"launch chrome\" -> invoke `open_application(app_name=\"chrome\")`). "
     "NEVER output plain text saying \"Opening Notepad.\" or \"I'll open...\" without invoking `open_application`! You cannot open applications without calling the tool.\n"
+    "- CLICKING UI ELEMENTS: ALWAYS invoke `find_and_click_element(app_name=\"...\", element_name=\"...\")` when the user asks to click a button, tab, menu item, or link in an application "
+    "(e.g. \"click reels in instagram\" -> invoke `find_and_click_element(app_name=\"Instagram\", element_name=\"Reels\")`, "
+    "\"click chats in whatsapp\" -> invoke `find_and_click_element(app_name=\"WhatsApp\", element_name=\"Chats\")`, "
+    "\"click file in notepad\" -> invoke `find_and_click_element(app_name=\"Notepad\", element_name=\"File\")`). "
+    "If the target app is not yet running, open it first with `open_application`. "
+    "NOTE: UI Automation relies on standard Windows accessibility; custom canvas apps or games without accessibility labels cannot be controlled via element names.\n"
+    "- WINDOW SCROLLING: ALWAYS invoke `scroll_window(direction=\"down\"|\"up\", amount=...)` when asked to scroll the active window, feed, or document "
+    "(e.g. \"scroll down\" -> invoke `scroll_window(direction=\"down\", amount=3)`, \"scroll up\" -> invoke `scroll_window(direction=\"up\", amount=3)`). Amount defaults to 3 clicks.\n"
     "- DESKTOP TYPING & ENTER KEY: ALWAYS invoke `type_text(text=\"...\", press_enter=...)` when asked to type text into the active window, "
     "and `press_enter_key()` when asked to press enter or send. NEVER simulate or narrate typing in plain text.\n"
     "- DATE & TIME QUESTIONS: ALWAYS call the `get_current_datetime` tool for any questions asking for the current date, today's date, current time, day of the week, month, or year (e.g. \"what's the date of today\", \"what time is it\", \"what day is today\"). You do not have an internal clock, so you MUST query `get_current_datetime` for real-time date and time. NEVER state that the date or time is not available or a dynamic value. When synthesizing the final response from `get_current_datetime`, ALWAYS speak a single, concise natural sentence (e.g. \"It's Sunday, September 13th, 1:46 PM\" or \"The time is 1:46 PM\"). NEVER read bullet points, field labels, or raw tool output verbatim.\n"
@@ -83,6 +99,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "- NEVER NARRATE TOOL CALLS OR OUTPUT RAW JSON: NEVER output narration phrases like \"I'll call the `web_search` tool\" or \"I will run python\" and NEVER output raw JSON tool-calling blocks like {\"name\": ...} in your conversational text. To call a tool, invoke it through the tool calling interface directly. In your final text response to the user, speak naturally in plain conversational English without mentioning tool names, parameters, or code syntax.\n\n"
     "CRITICAL TOOL INSTRUCTIONS:\n"
     "- `open_application`: Call this tool whenever the user asks to open, launch, or start an app. Always invoke the tool directly.\n"
+    "- `find_and_click_element`: Call this tool whenever the user asks to click, activate, or select an element, button, tab, or menu in an app.\n"
+    "- `scroll_window`: Call this tool whenever the user asks to scroll up or scroll down in the current application.\n"
     "- `get_current_datetime`: Call this tool for any questions regarding the current date, time, day of the week, month, or year. Always use get_current_datetime (never web_search) for date or time queries. Always synthesize into a single natural spoken sentence.\n"
     "- When and ONLY when `type_text` or `press_enter_key` was ACTUALLY executed and returned a tool result in the current turn: In your final response, you MUST state the EXACT window name reported in that tool result. "
     "If the tool result states that typing succeeded, you MUST confirm that typing succeeded into that window. "

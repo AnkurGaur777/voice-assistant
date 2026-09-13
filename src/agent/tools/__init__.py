@@ -8,12 +8,16 @@ from src.agent.tools.clipboard import (
 from src.agent.tools.datetime_tool import format_current_datetime, get_current_datetime
 from src.agent.tools.desktop import (
     APP_ALIASES,
+    find_and_click_element,
     focus_window_by_name,
     get_active_window_title,
+    get_window_by_app_name,
     launch_app,
+    list_ui_elements,
     open_application,
     press_enter_in_active_window,
     press_enter_key,
+    scroll_window,
     type_text,
 )
 from src.agent.tools.reminders import (
@@ -44,11 +48,15 @@ __all__ = [
     "summarize_clipboard",
     "get_clipboard_text",
     "open_application",
+    "find_and_click_element",
+    "scroll_window",
     "type_text",
     "press_enter_key",
     "press_enter_in_active_window",
     "launch_app",
+    "list_ui_elements",
     "get_active_window_title",
+    "get_window_by_app_name",
     "focus_window_by_name",
     "APP_ALIASES",
     "run_python",

@@ -714,8 +714,30 @@ def main():
         action="store_true",
         help="Enable verbose debug logging for wake word detection",
     )
+    parser.add_argument(
+        "--list-launchable-apps",
+        action="store_true",
+        help="Scan and list all discoverable Start Menu, Desktop, and Windows Store applications, then exit",
+    )
+    parser.add_argument(
+        "--list-ui-elements",
+        type=str,
+        default=None,
+        metavar="APP_NAME",
+        help="Inspect and list accessible UI elements for a running application, then exit",
+    )
 
     args = parser.parse_args()
+
+    if args.list_launchable_apps:
+        from src.agent.tools.desktop import list_launchable_apps
+        list_launchable_apps()
+        sys.exit(0)
+
+    if args.list_ui_elements:
+        from src.agent.tools.desktop import list_ui_elements
+        list_ui_elements(args.list_ui_elements)
+        sys.exit(0)
 
     enable_tray = not args.no_tray
     enable_orb = not args.no_orb
