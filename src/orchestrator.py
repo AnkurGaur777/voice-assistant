@@ -102,6 +102,73 @@ def is_stop_phrase(text: str, stop_phrases: Optional[List[str]] = None) -> bool:
             return True
         if clean.startswith(f"{clean_phrase} ") or clean.endswith(f" {clean_phrase}"):
             return True
+def is_noise_or_wake_word_artifact(text: str) -> bool:
+    """
+    Detects if a transcribed utterance in conversation mode is ambient noise,
+    a solitary wake-word artifact, or a common short acoustic hallucination.
+
+    Returns True if the utterance should be discarded as noise rather than
+    treated as a genuine conversational command.
+    """
+    if not text or not text.strip():
+        return True
+
+    # Check for Whisper bracketed audio captions (e.g. "[music]", "(clears throat)", "*sigh*")
+    stripped = text.strip()
+    if (
+        (stripped.startswith("[") and stripped.endswith("]"))
+        or (stripped.startswith("(") and stripped.endswith(")"))
+        or (stripped.startswith("*") and stripped.endswith("*"))
+    ):
+        return True
+
+    # Normalize tokens
+    tokens = [w for w in re.sub(r"[^\w\s]", "", text).lower().split() if w]
+    if not tokens:
+        return True
+
+    # Filter very short utterances (under 3-4 words) consisting solely of wake words or fillers
+    if len(tokens) <= 3:
+        clean_str = " ".join(tokens)
+        wake_word_phrases = {
+            "jarvis",
+            "hey jarvis",
+            "hi jarvis",
+            "hello jarvis",
+            "ok jarvis",
+            "okay jarvis",
+            "yo jarvis",
+            "jarvis jarvis",
+        }
+        if clean_str in wake_word_phrases:
+            return True
+
+        # Pure acoustic filler artifacts produced by Whisper on silence / noise
+        noise_fillers = {
+            "you",
+            "uh",
+            "um",
+            "ah",
+            "er",
+            "yeah",
+            "yes",
+            "oh",
+            "huh",
+            "hmm",
+            "hm",
+            "mm",
+            "so",
+            "the",
+            "a",
+            "i",
+        }
+        if clean_str in noise_fillers:
+            return True
+
+        # Utterances composed solely of combinations of wake-words and fillers
+        if all(w in (wake_word_phrases | noise_fillers | {"hey", "hi", "ok", "okay", "hello"}) for w in tokens):
+            return True
+
     return False
 
 
@@ -416,6 +483,14 @@ class VoiceAssistantOrchestrator:
                         if self.debug:
                             print(f"[DEBUG] Stop phrase TTS error: {tts_err}")
                     break
+
+                # Filter ambient noise or solitary wake-word artifacts in conversation mode
+                if is_noise_or_wake_word_artifact(followup_text):
+                    print(
+                        f"[Conversation] Filtered ambient noise / wake-word artifact ('{followup_text}'). "
+                        "Continuing hands-free listening..."
+                    )
+                    continue
 
                 # Brain & LangGraph Agent
                 self._set_tray_state(JarvisTrayState.PROCESSING, f"Thinking about: {followup_text[:25]}...")

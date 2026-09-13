@@ -19,7 +19,13 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.orchestrator import VoiceAssistantOrchestrator, is_stop_phrase, DEFAULT_STOP_PHRASES
+from src.orchestrator import (
+    DEFAULT_STOP_PHRASES,
+    VoiceAssistantOrchestrator,
+    is_noise_or_wake_word_artifact,
+    is_stop_phrase,
+)
+from src.agent.graph import is_tool_or_action_query
 from tray.tray_app import JarvisTrayState
 
 
@@ -72,6 +78,72 @@ class TestVoiceAssistantOrchestrator(unittest.TestCase):
         self.assertFalse(is_stop_phrase("hello jarvis"))
         self.assertFalse(is_stop_phrase(""))
         self.assertFalse(is_stop_phrase("   "))
+
+    def test_is_noise_or_wake_word_artifact(self):
+        """Verifies detection of ambient noise, solitary wake words, and acoustic filler artifacts."""
+        # Solitary wake words and wake-word variants
+        self.assertTrue(is_noise_or_wake_word_artifact("Jarvis."))
+        self.assertTrue(is_noise_or_wake_word_artifact("jarvis"))
+        self.assertTrue(is_noise_or_wake_word_artifact("Hey Jarvis."))
+        self.assertTrue(is_noise_or_wake_word_artifact("hello jarvis"))
+        self.assertTrue(is_noise_or_wake_word_artifact("Ok Jarvis!"))
+        self.assertTrue(is_noise_or_wake_word_artifact("Jarvis Jarvis"))
+
+        # Pure acoustic filler artifacts produced by Whisper on silence / noise
+        self.assertTrue(is_noise_or_wake_word_artifact("you"))
+        self.assertTrue(is_noise_or_wake_word_artifact("uh"))
+        self.assertTrue(is_noise_or_wake_word_artifact("um."))
+        self.assertTrue(is_noise_or_wake_word_artifact("[music]"))
+        self.assertTrue(is_noise_or_wake_word_artifact("(clears throat)"))
+        self.assertTrue(is_noise_or_wake_word_artifact("*sigh*"))
+        self.assertTrue(is_noise_or_wake_word_artifact(""))
+        self.assertTrue(is_noise_or_wake_word_artifact("   "))
+
+        # Genuine user commands and questions should NEVER be filtered
+        self.assertFalse(is_noise_or_wake_word_artifact("what is the date today"))
+        self.assertFalse(is_noise_or_wake_word_artifact("what time is it"))
+        self.assertFalse(is_noise_or_wake_word_artifact("calculate 5 + 5"))
+        self.assertFalse(is_noise_or_wake_word_artifact("Jarvis what time is it"))
+        self.assertFalse(is_noise_or_wake_word_artifact("tell me a joke"))
+
+    def test_is_tool_or_action_query(self):
+        """Verifies detection of real-time action/tool queries vs conversational memory queries."""
+        # Action queries requiring tools (never retrieve stale vector memory)
+        self.assertTrue(is_tool_or_action_query("what is the date today"))
+        self.assertTrue(is_tool_or_action_query("what's today's date"))
+        self.assertTrue(is_tool_or_action_query("what time is it"))
+        self.assertTrue(is_tool_or_action_query("tell me the time"))
+        self.assertTrue(is_tool_or_action_query("calculate 358% of 340"))
+        self.assertTrue(is_tool_or_action_query("what is 25 * 4"))
+        self.assertTrue(is_tool_or_action_query("open notepad"))
+        self.assertTrue(is_tool_or_action_query("type hello and press enter"))
+        self.assertTrue(is_tool_or_action_query("remind me to call mom in 10 minutes"))
+        self.assertTrue(is_tool_or_action_query("search the web for python"))
+
+        # Conversational / memory queries (allowed to retrieve vector memory)
+        self.assertFalse(is_tool_or_action_query("my favorite color is blue"))
+        self.assertFalse(is_tool_or_action_query("what is my name"))
+        self.assertFalse(is_tool_or_action_query("who is my brother"))
+        self.assertFalse(is_tool_or_action_query("how are you doing"))
+
+    def test_continuous_conversation_filters_ambient_noise(self):
+        """Verifies that an ambient noise 'Jarvis.' artifact in conversation mode is filtered and ignored."""
+        self.orchestrator.detector.listen_and_record.return_value = "query1.wav"
+        # Turn 2 produces 'Jarvis.' (ambient noise), Turn 3 produces silence timeout
+        self.orchestrator.detector.record_utterance.side_effect = ["noise.wav", None]
+
+        with patch("src.orchestrator.transcribe_audio", side_effect=["hello", "Jarvis."]) as mock_stt, \
+             patch("src.orchestrator.run_agent", return_value=("Hello!", [])) as mock_agent, \
+             patch("src.orchestrator.speak") as mock_speak:
+
+            continue_loop = self.orchestrator.run_turn()
+
+            self.assertTrue(continue_loop)
+            self.assertEqual(mock_stt.call_count, 2)
+            # Agent only ran once (for 'hello'), NOT for 'Jarvis.' noise
+            self.assertEqual(mock_agent.call_count, 1)
+            # Speak only ran once (for 'hello' response)
+            self.assertEqual(mock_speak.call_count, 1)
 
     def test_successful_turn_execution(self):
         """Verifies a full successful pipeline turn flows through all stages."""
@@ -214,6 +286,36 @@ class TestVoiceAssistantOrchestrator(unittest.TestCase):
         # Verify detector, scheduler, and tray were cleanly closed
         self.orchestrator.detector.close.assert_called_once()
         self.orchestrator.tray_app.stop.assert_called_once()
+
+    def test_llm_node_preserves_tool_binding_across_multi_turn_history(self):
+        """Verifies that in turn 2, having ToolMessage from turn 1 does NOT strip tools from the LLM."""
+        from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+        from src.agent.graph import create_llm_node
+
+        mock_bound_llm = MagicMock()
+        mock_bound_llm.invoke.return_value = AIMessage(content="Today is September 13, 2026")
+
+        # Mock RunnableBinding with .bound attribute
+        mock_binding = MagicMock()
+        mock_binding.bound = MagicMock()  # unbound client
+        mock_binding.invoke = mock_bound_llm.invoke
+
+        node = create_llm_node(llm=mock_binding, enable_memory=False)
+
+        # Multi-turn state: Turn 1 had tool call and tool message, now user asks turn 2 query
+        multi_turn_messages = [
+            HumanMessage(content="what time is it"),
+            AIMessage(content="", tool_calls=[{"name": "get_current_datetime", "args": {}, "id": "call_1"}]),
+            ToolMessage(content="10:00 AM", tool_call_id="call_1"),
+            AIMessage(content="The time is 10:00 AM"),
+            HumanMessage(content="what is the date today"),  # Turn 2 query!
+        ]
+
+        result = node({"messages": multi_turn_messages})
+        self.assertIsNotNone(result)
+        # Verify that mock_binding.invoke was called (tools BOUND), NOT mock_binding.bound.invoke!
+        mock_binding.invoke.assert_called_once()
+        mock_binding.bound.invoke.assert_not_called()
 
 
 if __name__ == "__main__":

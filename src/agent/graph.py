@@ -188,6 +188,60 @@ def extract_fallback_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]]
     return cleaned, tool_calls
 
 
+def is_tool_or_action_query(query: str) -> bool:
+    """
+    Determines whether a user query requires active tool execution (e.g. clock/datetime,
+    math calculations, app launching, desktop typing, reminders, web search, or clipboard).
+    Queries requiring real-time tool execution should never retrieve or be constrained by
+    stale vector memory snippets from previous unrelated turns.
+    """
+    if not query or not query.strip():
+        return False
+    clean = query.strip().lower()
+
+    # Datetime indicators
+    datetime_indicators = (
+        "time", "date", "clock", "day today", "today's day", "day of the week",
+        "what day", "what date", "today", "current time", "current date",
+        "tell me the time", "tell me the date", "what time", "what's the time",
+    )
+    if any(ind in clean for ind in datetime_indicators):
+        return True
+
+    # Mathematical calculations & percentages
+    math_indicators = (
+        "calculate", "compute", "math", "%", "percent", "percentage",
+        "plus", "minus", "divided by", "multiplied by", "times",
+    )
+    if any(ind in clean for ind in math_indicators):
+        return True
+    if re.search(r"\d+\s*[\+\-\*\/\%]\s*\d+", clean) or re.search(r"\d+\s*(?:percent|%)\s*of\s*\d+", clean):
+        return True
+
+    # Desktop actions & typing
+    desktop_prefixes = (
+        "open ", "launch ", "start ", "type ", "write ", "enter ",
+        "press enter", "send it", "close ",
+    )
+    if any(clean.startswith(p) for p in desktop_prefixes):
+        return True
+
+    # Clipboard
+    if any(ind in clean for ind in ("clipboard", "copied")):
+        return True
+
+    # Reminders
+    if any(ind in clean for ind in ("remind", "reminder", "alarm", "schedule")):
+        return True
+
+    # Web search for live external info
+    search_indicators = ("search", "google", "look up", "find online", "weather")
+    if any(ind in clean for ind in search_indicators):
+        return True
+
+    return False
+
+
 def create_llm_node(
     llm: Any,
     system_prompt: str = DEFAULT_SYSTEM_PROMPT,
@@ -211,28 +265,24 @@ def create_llm_node(
                 latest_user_query = str(msg.content)
                 break
 
-        # Check if a tool has just returned a result (synthesis turn)
-        has_tool_result = any(
-            isinstance(msg, ToolMessage) or getattr(msg, "tool_call_id", None) is not None
-            for msg in raw_messages
+        # Check if a tool has just returned a result in this turn (synthesis turn).
+        # A synthesis turn occurs ONLY when the immediately preceding message is a tool output.
+        has_tool_result = (
+            len(raw_messages) > 0
+            and (
+                isinstance(raw_messages[-1], ToolMessage)
+                or getattr(raw_messages[-1], "tool_call_id", None) is not None
+            )
         )
 
-        # Retrieve relevant past vector memory if enabled (only on initial decision turn, not on tool synthesis)
+        is_action_query = is_tool_or_action_query(latest_user_query)
+
+        # Retrieve relevant past vector memory if enabled (only for factual/personal knowledge,
+        # NOT on tool synthesis turns and NOT for tool/action queries like math, clock, or desktop commands).
         effective_system_prompt = system_prompt
         past_exchanges: List[Dict[str, Any]] = []
 
-        is_datetime_query = False
-        if latest_user_query:
-            clean_q = latest_user_query.strip().lower()
-            datetime_indicators = (
-                "what time", "what's the time", "current time", "time right now",
-                "what date", "what's the date", "current date", "today's date", "date of today",
-                "what day", "what's today", "day today", "date today",
-                "tell me the date", "tell me the time",
-            )
-            is_datetime_query = any(ind in clean_q for ind in datetime_indicators)
-
-        if enable_memory and latest_user_query and not has_tool_result and not is_datetime_query:
+        if enable_memory and latest_user_query and not has_tool_result and not is_action_query:
             past_exchanges = retrieve_relevant_context(
                 query=latest_user_query,
                 top_k=1,
@@ -263,24 +313,15 @@ def create_llm_node(
         # If the query is conversational/declarative, memory was retrieved to answer the question,
         # or a tool result is being synthesized, use the unbound LLM (if available) to prevent
         # Ollama from injecting forced function-calling instructions on non-action queries or synthesis turns.
+        # NEVER unbind tools for action queries (e.g. datetime, math, reminders, desktop, search).
         active_llm = llm
         unbound_llm = llm.bound if isinstance(llm, RunnableBinding) else None
         if unbound_llm is not None:
             if has_tool_result:
-                # Tools have already executed; synthesize the result directly without tool-calling templates
+                # Tools have already executed in this turn; synthesize the result directly without tool-calling templates
                 active_llm = unbound_llm
-            elif latest_user_query:
+            elif latest_user_query and not is_action_query:
                 clean_q = latest_user_query.strip().lower()
-                action_indicators = (
-                    "remind", "reminder", "alarm", "schedule",
-                    "search", "google", "look up", "find online", "news",
-                    "calculate", "compute", "math", "+", "-", "*", "/", "%", "percent",
-                    "open ", "launch ", "start ",
-                    "type ", "enter ", "write ",
-                    "clipboard", "copied",
-                    "time", "clock", "date", "day", "today", "tomorrow", "yesterday",
-                )
-                is_action_command = any(kw in clean_q for kw in action_indicators)
                 declarative_prefixes = (
                     "my favorite", "my name", "my job", "my work", "my hobby", "my dog", "my cat",
                     "i like", "i love", "i live", "i work", "i am", "i'm", "i prefer", "i enjoy",
@@ -289,9 +330,8 @@ def create_llm_node(
                     "thank you", "thanks",
                 )
                 is_declarative = any(clean_q.startswith(p) for p in declarative_prefixes)
-
                 has_memory = bool(past_exchanges)
-                if (has_memory and not is_action_command) or (is_declarative and not is_action_command):
+                if has_memory or is_declarative:
                     active_llm = unbound_llm
 
         response = active_llm.invoke(messages)
@@ -346,8 +386,8 @@ def create_llm_node(
 
         if not has_tool_calls:
             # Final assistant response produced (no tool calls pending)
-            # Store turn in vector memory
-            if enable_memory and latest_user_query and getattr(response, "content", None):
+            # Store turn in vector memory only if NOT an ephemeral action/tool query (e.g. clock, math calculation)
+            if enable_memory and latest_user_query and not is_action_query and getattr(response, "content", None):
                 content_str = str(response.content).strip()
                 if content_str and not content_str.startswith("Error:"):
                     store_exchange(
