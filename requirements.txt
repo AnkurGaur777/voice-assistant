@@ -22,6 +22,7 @@ requests>=2.31.0
 # --- Phase 4: Task Automation Tools ---
 pyperclip>=1.8.2
 pyautogui>=0.9.54
+pywinauto>=0.6.9
 duckduckgo-search>=6.0.0
 
 # --- Phase 5: Text-to-Speech (TTS) ---
