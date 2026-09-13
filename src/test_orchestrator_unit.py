@@ -38,7 +38,7 @@ class TestVoiceAssistantOrchestrator(unittest.TestCase):
             enable_tray=True,
             enable_memory=False,
             continuous_mode=True,
-            conversation_timeout=6.0,
+            conversation_timeout=60.0,
         )
         # Mock components to isolate logic from hardware
         self.orchestrator.detector = MagicMock()
@@ -53,7 +53,7 @@ class TestVoiceAssistantOrchestrator(unittest.TestCase):
         self.assertEqual(default_orch.wake_threshold, 0.35)
         self.assertEqual(default_orch.whisper_model, "small")
         self.assertTrue(default_orch.continuous_mode)
-        self.assertEqual(default_orch.conversation_timeout, 6.0)
+        self.assertEqual(default_orch.conversation_timeout, 60.0)
 
     def test_is_stop_phrase(self):
         """Verifies stop phrase matching with punctuation, whitespace, and case normalization."""
@@ -317,6 +317,30 @@ class TestVoiceAssistantOrchestrator(unittest.TestCase):
         mock_binding.invoke.assert_called_once()
         mock_binding.bound.invoke.assert_not_called()
 
+    def test_set_ui_state_syncs_tray_and_orb(self):
+        """Verifies _set_ui_state updates both tray app and orb overlay in lockstep."""
+        orchestrator = VoiceAssistantOrchestrator(enable_tray=True, enable_orb=True)
+        orchestrator.tray_app = MagicMock()
+        orchestrator.orb_overlay = MagicMock()
+
+        orchestrator._set_ui_state(JarvisTrayState.PROCESSING, "Thinking...")
+
+        orchestrator.tray_app.set_state.assert_called_once_with(
+            JarvisTrayState.PROCESSING,
+            custom_message="Thinking...",
+        )
+        orchestrator.orb_overlay.set_state.assert_called_once_with("processing")
+
+    def test_orchestrator_orb_disabled_via_flag(self):
+        """Verifies enable_orb=False does not start or update orb overlay."""
+        orchestrator = VoiceAssistantOrchestrator(enable_tray=False, enable_orb=False)
+        self.assertFalse(orchestrator.enable_orb)
+        self.assertIsNone(orchestrator.orb_overlay)
+
+        # Calling _set_ui_state with no tray/orb should not raise any exceptions
+        orchestrator._set_ui_state(JarvisTrayState.SPEAKING, "Speaking...")
+
 
 if __name__ == "__main__":
     unittest.main()
+

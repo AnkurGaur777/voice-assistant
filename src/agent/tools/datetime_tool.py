@@ -30,13 +30,18 @@ def format_current_datetime() -> str:
 def get_current_datetime() -> str:
     """Get the current local system date, time, and day of the week.
 
-    Use this tool ONLY when the user asks for the current date, current time,
+    Use this tool for questions regarding the current date, current time,
     day of the week, month, year, or 'what day is it today'. Always use this tool
-    instead of web_search for date or time questions. Never call this tool for general
-    questions, conversational queries, or personal preferences.
+    instead of web_search for date or time questions.
+
+    CRITICAL FOR FINAL SPEECH:
+    You MUST convert the returned date/time information into a single, concise, natural
+    conversational spoken sentence (e.g. "It's Sunday, September 13th, 1:46 PM" or "The time is 1:46 PM").
+    NEVER recite bullet points, field labels, or multiple lines verbatim.
     """
     print("[System Clock] Fetching current system date and time...")
     result = format_current_datetime()
     summary_line = result.replace("\n", " | ")
     print(f"[System Clock] Retrieved: {summary_line}")
     return result
+

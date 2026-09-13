@@ -120,6 +120,16 @@ def store_exchange(
     if any(q in lower_user for q in ephemeral_time_queries):
         return None
 
+    # Do not persist ephemeral desktop action / tool queries into permanent vector memory
+    ephemeral_action_queries = [
+        "type ", "typed", "typing",
+        "open notepad", "open application", "launch ", "start ",
+        "press enter", "hit enter", "send it", "send message",
+        "write in notepad", "write into",
+    ]
+    if any(q in lower_user for q in ephemeral_action_queries):
+        return None
+
     # Do not persist exchanges where the assistant expressed failure, lack of information, or uncertainty
     # to avoid negative feedback loops in future retrievals
     unpersisted_patterns = [
@@ -148,15 +158,31 @@ def store_exchange(
     # Do not persist corrupted, incoherent, or cross-tool contaminated responses
     corrupted_patterns = [
         "typing was cancelled",
+        "typing was canceled",
         "typing was rejected",
         "typing was aborted",
         "typing cancelled",
+        "typing canceled",
         "typing rejected",
         "typing aborted",
         "cancelled into",
         "canceled into",
         "aborted into",
         "rejected into",
+        "successfully typed",
+        "characters into",
+        "character into",
+        "keystrokes were sent",
+        "keystrokes sent",
+        "press enter key",
+        "pressed enter",
+        "pressing enter",
+        "opening notepad",
+        "opened notepad",
+        "opening application",
+        "opened application",
+        "launching application",
+        "launched application",
         "current system date and time",
         "current system date",
         "system date and time",
@@ -180,6 +206,20 @@ def store_exchange(
         "call the `",
     ]
     if any(pattern in lower_resp for pattern in corrupted_patterns):
+        return None
+
+    # Desktop action outcome phrases, character counts, and cancellations
+    if re.search(r"typed\s+\d+\s+characters?", lower_resp):
+        return None
+    if re.search(r"typing\s+(?:was\s+)?(?:cancelled|canceled|rejected|aborted)", lower_resp):
+        return None
+    if re.search(r"successfully\s+typed", lower_resp):
+        return None
+    if re.search(r"(?:pressed|pressing)\s+enter", lower_resp):
+        return None
+    if re.search(r"keystrokes?\s+(?:were\s+)?(?:sent|injected|cancelled|canceled)", lower_resp):
+        return None
+    if re.search(r"(?:opened|opening|launched|launching)\s+[a-z0-9_\-\. ]+", lower_resp):
         return None
 
     # Mismatched cross-tool fragments (e.g. typing into date/time/clock/system)
@@ -317,15 +357,31 @@ def _sanitize_assistant_text(text: str) -> str:
         "i don't see any text copied to the clipboard",
         "the clipboard is currently empty",
         "typing was cancelled",
+        "typing was canceled",
         "typing was rejected",
         "typing was aborted",
         "typing cancelled",
+        "typing canceled",
         "typing rejected",
         "typing aborted",
         "cancelled into",
         "canceled into",
         "aborted into",
         "rejected into",
+        "successfully typed",
+        "characters into",
+        "character into",
+        "keystrokes were sent",
+        "keystrokes sent",
+        "press enter key",
+        "pressed enter",
+        "pressing enter",
+        "opening notepad",
+        "opened notepad",
+        "opening application",
+        "opened application",
+        "launching application",
+        "launched application",
         "current system date and time",
         "current system date",
         "system date and time",
@@ -348,6 +404,20 @@ def _sanitize_assistant_text(text: str) -> str:
         "call the `",
     ]
     if any(snippet in lower for snippet in unpersisted_snippets):
+        return ""
+
+    # Drop any desktop action outcome phrases, character count confirmations, or cancellations
+    if re.search(r"typed\s+\d+\s+characters?", lower):
+        return ""
+    if re.search(r"typing\s+(?:was\s+)?(?:cancelled|canceled|rejected|aborted)", lower):
+        return ""
+    if re.search(r"successfully\s+typed", lower):
+        return ""
+    if re.search(r"(?:pressed|pressing)\s+enter", lower):
+        return ""
+    if re.search(r"keystrokes?\s+(?:were\s+)?(?:sent|injected|cancelled|canceled)", lower):
+        return ""
+    if re.search(r"(?:opened|opening|launched|launching)\s+[a-z0-9_\-\. ]+", lower):
         return ""
 
     if re.search(r"typing.*into.*(date|time|clock|system)", lower):

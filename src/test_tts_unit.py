@@ -25,6 +25,7 @@ from src.tts import (
     SUPPORTED_VOICES,
     list_available_voices,
     resolve_voice_key,
+    sanitize_speech_text,
     speak,
     split_into_sentences,
     synthesize_sentence,
@@ -161,6 +162,21 @@ class TestSynthesisPipeline(unittest.TestCase):
         self.assertGreaterEqual(ttfa_list[0], 0.0)
         mock_stream.stop.assert_called_once()
         mock_stream.close.assert_called_once()
+
+    def test_sanitize_speech_text_converts_datetime_dump(self):
+        """Verifies multi-line datetime tool dump is synthesized into a concise natural sentence."""
+        raw_dump = (
+            "Current system date and time:\n"
+            "- Date: Sunday, September 13, 2026\n"
+            "- Time: 1:46 PM (13:46)\n"
+            "- Day of the week: Sunday\n"
+            "- Timezone: India Standard Time"
+        )
+        cleaned = sanitize_speech_text(raw_dump)
+        self.assertEqual(cleaned, "It's Sunday, September 13, 2026, 1:46 PM.")
+        self.assertNotIn("Timezone:", cleaned)
+        self.assertNotIn("Day of the week:", cleaned)
+
 
 
 def main():

@@ -9,7 +9,7 @@ An autonomous, fully local voice assistant running on Windows with wake word det
 1. **Wake Word Detection**: Hands-free detection for *"Hey Jarvis"* using openWakeWord (ONNX).
 2. **Continuous Conversation Mode**:
    - Multi-turn hands-free dialogue without repeating *"Hey Jarvis"*.
-   - Dynamic VAD speech segmentation with a 6.0-second silence timeout (quietly reverts to standby while preserving conversation context).
+   - Dynamic VAD speech segmentation with a 60.0-second silence timeout safety net (quietly reverts to standby while preserving conversation context).
    - Configurable stop phrase recognition (*"stop"*, *"goodbye"*, *"that's all"*, *"thank you jarvis"*).
 3. **Local LLM & LangGraph Agent**:
    - Ollama-powered LLM reasoning (`llama3.2:3b` on RTX GPU).
@@ -72,7 +72,7 @@ wscript.exe start_jarvis.vbs
 --whisper-model SIZE      faster-whisper size (tiny, base, small; default: small)
 --voice VOICE             Piper TTS voice (ryan, lessac; default: ryan)
 --threshold FLOAT         Wake word confidence threshold (default: 0.35)
---conversation-timeout S  Silence timeout for continuous conversation (default: 6.0)
+--conversation-timeout S  Silence timeout for continuous conversation (default: 60.0)
 --no-continuous           Disable multi-turn hands-free continuous conversation
 --stop-phrases LIST       Comma-separated custom stop phrases
 --no-tray                 Run in console mode without tray icon

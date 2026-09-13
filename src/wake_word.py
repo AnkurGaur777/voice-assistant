@@ -379,7 +379,7 @@ class WakeWordDetector:
     def record_utterance(
         self,
         stop_event: Optional[threading.Event] = None,
-        speech_timeout: float = 6.0,
+        speech_timeout: float = 60.0,
         max_duration: float = MAX_RECORDING_SECONDS,
     ) -> Optional[str]:
         """

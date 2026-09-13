@@ -128,9 +128,11 @@ class JarvisTrayApp:
     def __init__(
         self,
         on_quit: Optional[Callable[[], None]] = None,
+        on_toggle_orb: Optional[Callable[[], None]] = None,
         initial_state: JarvisTrayState = JarvisTrayState.LISTENING,
     ):
         self._on_quit = on_quit
+        self._on_toggle_orb = on_toggle_orb
         self._current_state = initial_state
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
@@ -138,11 +140,16 @@ class JarvisTrayApp:
 
         # Build initial icon and menu
         self._icon_image = create_state_icon(initial_state.value)
-        self._menu = pystray.Menu(
+        menu_items = [
             pystray.MenuItem(lambda text: f"Status: {self._get_status_text()}", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Quit Jarvis", self._handle_quit),
-        )
+        ]
+        if self._on_toggle_orb is not None:
+            menu_items.append(pystray.MenuItem("Toggle Orb Overlay", self._handle_toggle_orb))
+            menu_items.append(pystray.Menu.SEPARATOR)
+        menu_items.append(pystray.MenuItem("Quit Jarvis", self._handle_quit))
+
+        self._menu = pystray.Menu(*menu_items)
 
         self._icon = pystray.Icon(
             name="LocalJarvis",
@@ -150,6 +157,14 @@ class JarvisTrayApp:
             title=f"Local Jarvis - {STATE_DESCRIPTIONS.get(initial_state, 'Active')}",
             menu=self._menu,
         )
+
+    def _handle_toggle_orb(self, icon=None, item=None) -> None:
+        """Callback triggered when the user clicks 'Toggle Orb Overlay' in the system tray menu."""
+        if self._on_toggle_orb:
+            try:
+                self._on_toggle_orb()
+            except Exception as e:
+                logging.error(f"[TrayApp] Error in on_toggle_orb callback: {e}")
 
     @property
     def current_state(self) -> JarvisTrayState:
