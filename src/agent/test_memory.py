@@ -381,6 +381,76 @@ class TestGraphMemoryIntegration(unittest.TestCase):
         self.assertEqual(stored_items[0]["user_message"], "my favorite color is blue")
         self.assertEqual(stored_items[0]["assistant_response"], "Got it, I'll remember that!")
 
+    def test_store_exchange_rejects_desktop_action_outcomes(self):
+        """Verifies that desktop action outcomes, character counts, and cancellations are excluded from memory."""
+        rejected_responses = [
+            "Typing was cancelled into Notepad.",
+            "Typing was rejected by user.",
+            "Successfully typed 188 characters into 'Notepad'.",
+            "I typed 50 characters into Google Chrome.",
+            "Keystrokes were sent to WhatsApp.",
+            "Opened application Notepad.",
+            "Pressed enter in focused window.",
+        ]
+        for resp in rejected_responses:
+            res = store_exchange(
+                user_message="something conversational",
+                assistant_response=resp,
+                persist_directory=self.temp_dir,
+            )
+            self.assertIsNone(res, f"Expected {resp} to be rejected from memory storage")
+
+    def test_store_exchange_rejects_ephemeral_desktop_queries(self):
+        """Verifies that queries asking to type, open apps, or press enter are rejected from memory."""
+        rejected_queries = [
+            "type hello world into notepad",
+            "open notepad",
+            "launch chrome",
+            "press enter",
+            "send message",
+        ]
+        for query in rejected_queries:
+            res = store_exchange(
+                user_message=query,
+                assistant_response="OK, done.",
+                persist_directory=self.temp_dir,
+            )
+            self.assertIsNone(res, f"Expected user query '{query}' to be rejected from memory storage")
+
+    def test_tool_synthesis_turn_skips_memory_injection_generically(self):
+        """Verifies that whenever ANY tool executed in the turn, memory injection is 100% skipped."""
+        from langchain_core.messages import ToolMessage
+        captured_messages = []
+
+        def mock_invoke(messages):
+            captured_messages.extend(messages)
+            return AIMessage(content="Successfully typed 188 characters into Notepad.")
+
+        mock_llm = MagicMock()
+        mock_llm.invoke.side_effect = mock_invoke
+
+        llm_node = create_llm_node(
+            llm=mock_llm,
+            enable_memory=True,
+            memory_db_path=self.temp_dir,
+        )
+
+        state = {
+            "messages": [
+                HumanMessage(content="type test into notepad"),
+                AIMessage(content="", tool_calls=[{"name": "type_text", "args": {"text": "test"}, "id": "1", "type": "tool_call"}]),
+                ToolMessage(content="[Desktop Automation] Successfully typed 188 characters into 'Notepad'.", tool_call_id="1"),
+            ]
+        }
+
+        result = llm_node(state)
+        self.assertEqual(len(result["messages"]), 1)
+
+        # Verify system prompt has tool synthesis instruction and does NOT have past memory injection
+        system_content = captured_messages[0].content
+        self.assertIn("CRITICAL TOOL SYNTHESIS INSTRUCTION", system_content)
+        self.assertNotIn("Past Information for Reference Only", system_content)
+
 
 def main():
     unittest.main(verbosity=2)

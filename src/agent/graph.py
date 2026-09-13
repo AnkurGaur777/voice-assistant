@@ -56,11 +56,19 @@ DEFAULT_TOOLS = [
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are Jarvis, a fast, capable, and intelligent local voice assistant.\n\n"
-    "FEW-SHOT CONVERSATIONAL EXAMPLE (NO TOOLS):\n"
+    "FEW-SHOT CONVERSATIONAL EXAMPLES (NO TOOLS):\n"
     "User: \"my favorite color is blue\"\n"
     "Assistant: \"Got it, I'll remember that!\" (plain conversational acknowledgment, NO tool call)\n\n"
+    "User: \"Hello world.\"\n"
+    "Assistant: \"Hello! How can I help you today?\" (conversational greeting, NO tool called - NEVER claim typing or desktop actions occurred or were cancelled)\n\n"
     "CRITICAL CONVERSATIONAL & TOOL CALLING RULES:\n"
-    "- DATE & TIME QUESTIONS: ALWAYS call the `get_current_datetime` tool for any questions asking for the current date, today's date, current time, day of the week, month, or year (e.g. \"what's the date of today\", \"what time is it\", \"what day is today\"). You do not have an internal clock, so you MUST query `get_current_datetime` for real-time date and time. NEVER state that the date or time is not available or a dynamic value.\n"
+    "- NEVER FABRICATE ACTION OUTCOMES WHEN NO TOOL WAS CALLED: If NO tool was called in the current turn, you must NEVER claim or imply that any action-related outcome occurred (such as typing, opening an application, cancelling an action, rejecting keystrokes, sending text, or executing a command). Action-related phrases like 'Typing was cancelled into...', 'Opening...', 'Typed text into...', 'Sent message to...', or 'Action cancelled' must ONLY EVER appear when a corresponding live tool result (ToolMessage) actually exists in the message history for this current turn. If the user's utterance is a statement, greeting, or unclear remark (e.g. 'Hello world.') where no tool was called, respond strictly as a normal conversational turn or ask for clarification — NEVER fabricate, hallucinate, or assume that an action was attempted, executed, or cancelled.\n"
+    "- APPLICATION & DESKTOP ACTIONS: ALWAYS invoke the `open_application` tool whenever the user asks to open, launch, or start an application "
+    "(e.g. \"open notepad\" -> invoke `open_application(app_name=\"notepad\")`, \"launch chrome\" -> invoke `open_application(app_name=\"chrome\")`). "
+    "NEVER output plain text saying \"Opening Notepad.\" or \"I'll open...\" without invoking `open_application`! You cannot open applications without calling the tool.\n"
+    "- DESKTOP TYPING & ENTER KEY: ALWAYS invoke `type_text(text=\"...\", press_enter=...)` when asked to type text into the active window, "
+    "and `press_enter_key()` when asked to press enter or send. NEVER simulate or narrate typing in plain text.\n"
+    "- DATE & TIME QUESTIONS: ALWAYS call the `get_current_datetime` tool for any questions asking for the current date, today's date, current time, day of the week, month, or year (e.g. \"what's the date of today\", \"what time is it\", \"what day is today\"). You do not have an internal clock, so you MUST query `get_current_datetime` for real-time date and time. NEVER state that the date or time is not available or a dynamic value. When synthesizing the final response from `get_current_datetime`, ALWAYS speak a single, concise natural sentence (e.g. \"It's Sunday, September 13th, 1:46 PM\" or \"The time is 1:46 PM\"). NEVER read bullet points, field labels, or raw tool output verbatim.\n"
     "- MATHEMATICAL CALCULATIONS & PERCENTAGES: ALWAYS use the `run_python` tool to evaluate math, arithmetic, and percentages (e.g. \"what is 358% of 340\" -> invoke `run_python` with code '340 * 3.58'). NEVER call `web_search` for math, arithmetic, or percentage questions.\n"
     "- When the user makes a statement sharing personal information/preferences (not a question, not a request to DO something), "
     "respond conversationally acknowledging it (e.g. \"Got it, I'll remember that!\") and do NOT call any tool. "
@@ -74,18 +82,20 @@ DEFAULT_SYSTEM_PROMPT = (
     "- FRESH TOOL RESULTS TAKE ABSOLUTE PRIORITY: When a tool is called in the current turn (such as get_current_datetime, web_search, run_python, set_reminder, etc.) and returns a result, you MUST answer the user using that fresh, live tool result. Fresh tool results ALWAYS override any past memory reference or previous conversation snippet. NEVER echo, substitute, or mix in past memory when a tool has just provided the fresh answer for the current query.\n"
     "- NEVER NARRATE TOOL CALLS OR OUTPUT RAW JSON: NEVER output narration phrases like \"I'll call the `web_search` tool\" or \"I will run python\" and NEVER output raw JSON tool-calling blocks like {\"name\": ...} in your conversational text. To call a tool, invoke it through the tool calling interface directly. In your final text response to the user, speak naturally in plain conversational English without mentioning tool names, parameters, or code syntax.\n\n"
     "CRITICAL TOOL INSTRUCTIONS:\n"
-    "- `get_current_datetime`: Call this tool for any questions regarding the current date, time, day of the week, month, or year. Always use get_current_datetime (never web_search) for date or time queries.\n"
-    "- When `type_text` or `press_enter_key` is executed: In your final response, you MUST state the EXACT window name reported in the tool result "
-    "(e.g. if the tool result mentions 'Windows PowerShell', you must report 'Windows PowerShell'), "
-    "even if the action was cancelled, rejected, or aborted by the user (e.g. 'Typing was cancelled into Windows PowerShell'). "
+    "- `open_application`: Call this tool whenever the user asks to open, launch, or start an app. Always invoke the tool directly.\n"
+    "- `get_current_datetime`: Call this tool for any questions regarding the current date, time, day of the week, month, or year. Always use get_current_datetime (never web_search) for date or time queries. Always synthesize into a single natural spoken sentence.\n"
+    "- When and ONLY when `type_text` or `press_enter_key` was ACTUALLY executed and returned a tool result in the current turn: In your final response, you MUST state the EXACT window name reported in that tool result. "
+    "If the tool result states that typing succeeded, you MUST confirm that typing succeeded into that window. "
+    "If the tool result states that typing was cancelled, only then report that it was cancelled into that window. "
     "If the user asks to type text and send it or press enter, call `type_text` with `press_enter=True`. "
-    "NEVER assume, guess, or invent the window name (e.g. do NOT say 'Notepad' if the tool reported 'Windows PowerShell').\n"
+    "NEVER assume, guess, or invent a different window name. "
+    "If NO tool was executed in this turn, you MUST NEVER mention typing, keystrokes, cancellations, or target windows.\n"
     "- When a tool returns an error (starts with 'Error:'), you MUST identify the SPECIFIC error type and cause reported by the tool, "
     "and quote or closely paraphrase the exact reason. NEVER use a generic 'stopped for exceeding the time limit' explanation unless the error is ACTUALLY an execution timeout.\n"
     "  * Security / Restricted imports (e.g. 'Error: SecurityError: Importing ... is prohibited'): Explain that the code was blocked because it tried to import a restricted module or execute prohibited operations.\n"
     "  * Execution timeouts (e.g. 'Error: Execution timed out'): State that the code was stopped because it took too long and exceeded the time limit (never describe a timeout as intended or successful).\n"
     "  * Syntax / Runtime exceptions (e.g. 'SyntaxError', 'ZeroDivisionError', 'PermissionError'): State the exact error (e.g. 'syntax error', 'division by zero', or 'filesystem access disabled').\n"
-    "- NEVER invent, fabricate, or hallucinate a plausible result when a tool fails or returns an error. Always truthfully report the specific failure reason.\n\n"
+    "- NEVER INVENT OR FABRICATE TOOL RESULTS OR ACTIONS: NEVER invent, fabricate, or hallucinate a plausible result when a tool fails, returns an error, or was NOT called. If no tool was called in the current turn, you must NEVER claim or imply that any tool was executed, attempted, cancelled, rejected, or failed. Always base action descriptions strictly on actual tool results present in the current turn's message history.\n\n"
     "Keep your final responses concise, natural, and conversational — suitable for being spoken aloud, "
     "ideally under ~40 words unless the user explicitly asks for detail, an explanation, or a list. "
     "Avoid markdown formatting, headers, or bullet points unless specifically requested."
@@ -188,6 +198,88 @@ def extract_fallback_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]]
     return cleaned, tool_calls
 
 
+def extract_action_intent_fallback(user_query: str, model_content: str = "") -> List[Dict[str, Any]]:
+    """
+    If the LLM narrated an action (e.g. 'Opening Notepad.') or generated plain text
+    instead of calling the tool for an unambiguous action command, synthesizes the
+    appropriate tool call so the action is reliably executed rather than merely narrated.
+    """
+    if not user_query or not user_query.strip():
+        return []
+
+    clean_q = re.sub(r"[^\w\s\-\.%]", "", user_query).lower().strip()
+
+    # 1. Application Launch: "open notepad", "launch chrome", "start calculator"
+    app_match = re.match(r"^(?:please\s+)?(?:open|launch|start|run)\s+(?:the\s+)?([a-zA-Z0-9_\-\. ]+)$", clean_q)
+    if app_match:
+        app_name = app_match.group(1).strip()
+        non_apps = {"a window", "the window", "the door", "a door", "my eyes", "this", "that", "it", "a file", "the file"}
+        if app_name and app_name not in non_apps and len(app_name.split()) <= 4:
+            return [{
+                "name": "open_application",
+                "args": {"app_name": app_name},
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "tool_call",
+            }]
+
+    # 2. Desktop Typing: "type <text>" or "type <text> and press enter"
+    type_match = re.match(r"^(?:please\s+)?type\s+(.+)$", clean_q)
+    if type_match:
+        raw_target = type_match.group(1).strip()
+        press_enter = False
+        if "and press enter" in raw_target:
+            press_enter = True
+            raw_target = raw_target.replace("and press enter", "").strip()
+        elif "and send it" in raw_target or "and send" in raw_target:
+            press_enter = True
+            raw_target = re.sub(r"\s+and\s+send(?:\s+it)?", "", raw_target).strip()
+
+        if raw_target:
+            return [{
+                "name": "type_text",
+                "args": {"text": raw_target, "press_enter": press_enter},
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "tool_call",
+            }]
+
+    # 3. Press Enter Key: "press enter", "hit enter", "send it"
+    if clean_q in ("press enter", "hit enter", "press enter key", "send it", "send message"):
+        return [{
+            "name": "press_enter_key",
+            "args": {},
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "tool_call",
+        }]
+
+    # 4. Datetime query: "what is the date", "what time is it", "what day is today"
+    datetime_phrases = (
+        "what time is it", "what's the time", "tell me the time", "what is the date",
+        "what's the date", "what is today's date", "what date is today", "what day is today",
+        "what day is it", "what is the current time", "what is the current date",
+    )
+    if any(clean_q == p or clean_q.startswith(f"{p} ") for p in datetime_phrases):
+        return [{
+            "name": "get_current_datetime",
+            "args": {},
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "tool_call",
+        }]
+
+    # 5. Math / Percentage evaluation: "calculate 358% of 340", "what is 25 * 4"
+    pm = re.search(r"(\d+(?:\.\d+)?)\s*(?:%|percent)\s*of\s*(\d+(?:\.\d+)?)", clean_q)
+    if pm:
+        pct = float(pm.group(1)) / 100.0
+        val = float(pm.group(2))
+        return [{
+            "name": "run_python",
+            "args": {"code": f"{val} * {pct}"},
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "tool_call",
+        }]
+
+    return []
+
+
 def is_tool_or_action_query(query: str) -> bool:
     """
     Determines whether a user query requires active tool execution (e.g. clock/datetime,
@@ -218,12 +310,13 @@ def is_tool_or_action_query(query: str) -> bool:
     if re.search(r"\d+\s*[\+\-\*\/\%]\s*\d+", clean) or re.search(r"\d+\s*(?:percent|%)\s*of\s*\d+", clean):
         return True
 
-    # Desktop actions & typing
-    desktop_prefixes = (
-        "open ", "launch ", "start ", "type ", "write ", "enter ",
-        "press enter", "send it", "close ",
+    # Desktop actions & typing (broad matching: startswith OR key action words)
+    desktop_keywords = (
+        "type", "typing", "typed", "write", "open", "launch", "start",
+        "press enter", "hit enter", "send it", "send message", "close",
+        "notepad", "chrome", "powershell", "whatsapp", "browser", "application",
     )
-    if any(clean.startswith(p) for p in desktop_prefixes):
+    if any(re.search(rf"\b{re.escape(kw)}\b", clean) for kw in desktop_keywords):
         return True
 
     # Clipboard
@@ -265,9 +358,19 @@ def create_llm_node(
                 latest_user_query = str(msg.content)
                 break
 
-        # Check if a tool has just returned a result in this turn (synthesis turn).
-        # A synthesis turn occurs ONLY when the immediately preceding message is a tool output.
-        has_tool_result = (
+        # Check if ANY tool was called or returned a result in the current turn (synthesis turn).
+        has_tool_in_turn = False
+        for msg in reversed(raw_messages):
+            if isinstance(msg, HumanMessage):
+                break
+            if isinstance(msg, ToolMessage) or getattr(msg, "tool_call_id", None) is not None:
+                has_tool_in_turn = True
+                break
+            if getattr(msg, "tool_calls", None):
+                has_tool_in_turn = True
+                break
+
+        has_tool_result = has_tool_in_turn or (
             len(raw_messages) > 0
             and (
                 isinstance(raw_messages[-1], ToolMessage)
@@ -278,7 +381,7 @@ def create_llm_node(
         is_action_query = is_tool_or_action_query(latest_user_query)
 
         # Retrieve relevant past vector memory if enabled (only for factual/personal knowledge,
-        # NOT on tool synthesis turns and NOT for tool/action queries like math, clock, or desktop commands).
+        # NEVER on tool synthesis turns, NEVER when any tool executed, and NEVER for tool/action queries).
         effective_system_prompt = system_prompt
         past_exchanges: List[Dict[str, Any]] = []
 
@@ -302,6 +405,21 @@ def create_llm_node(
                         f"=== End Past Reference ==="
                     )
                     print(f"[Memory] Injected {len(past_exchanges)} relevant past exchange(s) into context")
+
+        # If a tool executed in this turn, append a strict tool synthesis directive instructing the agent
+        # to report the actual ToolMessage result faithfully (confirming success or reporting cancellation)
+        # and forbidding echoing stale conversation memory or hallucinating cancellation.
+        if has_tool_result:
+            effective_system_prompt = (
+                f"{system_prompt}\n\n"
+                f"=== CRITICAL TOOL SYNTHESIS INSTRUCTION ===\n"
+                f"A tool has just executed and returned a fresh result in the preceding ToolMessage.\n"
+                f"You MUST synthesize your final spoken answer STRICTLY, FAITHFULLY, and ACCURATELY from that fresh ToolMessage.\n"
+                f"- If the tool reported success (e.g. 'Successfully typed...', 'Successfully opened...'), you MUST confirm that the action succeeded! NEVER state that the action was cancelled, rejected, or aborted.\n"
+                f"- If the tool reported cancellation (e.g. 'cancelled by user'), only then report that the action was cancelled.\n"
+                f"- NEVER contradict the ToolMessage. The fresh ToolMessage takes absolute priority over any previous examples or conversation history.\n"
+                f"=== End Tool Synthesis Instruction ==="
+            )
 
         # Inject or update system prompt at index 0
         if not raw_messages or not isinstance(raw_messages[0], SystemMessage):
@@ -385,9 +503,22 @@ def create_llm_node(
                         print(f"[Tool Invoked via Fallback Parser] {tool_name}(args={tool_args})")
 
         if not has_tool_calls:
+            # Fallback 2: Check if user query was an explicit action command that the model narrated instead of invoking
+            if latest_user_query and not has_tool_result:
+                intent_tool_calls = extract_action_intent_fallback(latest_user_query, str(getattr(response, "content", "")))
+                if intent_tool_calls:
+                    response.tool_calls = intent_tool_calls
+                    response.content = ""
+                    has_tool_calls = True
+                    for tc in response.tool_calls:
+                        tool_name = tc.get("name", "unknown")
+                        tool_args = tc.get("args", {})
+                        print(f"[Tool Invoked via Intent Fallback] {tool_name}(args={tool_args})")
+
+        if not has_tool_calls:
             # Final assistant response produced (no tool calls pending)
-            # Store turn in vector memory only if NOT an ephemeral action/tool query (e.g. clock, math calculation)
-            if enable_memory and latest_user_query and not is_action_query and getattr(response, "content", None):
+            # Store turn in vector memory only if NO tool was executed in this turn and query is not an action query
+            if enable_memory and latest_user_query and not has_tool_result and not is_action_query and getattr(response, "content", None):
                 content_str = str(response.content).strip()
                 if content_str and not content_str.startswith("Error:"):
                     store_exchange(

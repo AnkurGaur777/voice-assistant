@@ -299,6 +299,24 @@ def sanitize_speech_text(text: str) -> str:
         cleaned,
     )
 
+    # Convert raw datetime tool dump if echoed verbatim into natural spoken sentence
+    dt_match = re.search(
+        r"(?:Current system date and time:?\s*)?- Date:\s*([^-\n\r]+?)(?:[\r\n]+[ \t]*|\s+)- Time:\s*([^\(\n\r]+)",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if dt_match:
+        date_part = dt_match.group(1).strip()
+        time_part = dt_match.group(2).strip()
+        replacement = f"It's {date_part}, {time_part}."
+        cleaned = re.sub(
+            r"(?:Current system date and time:?\s*)?- Date:.*?(?:Timezone:[^\.\n\r]+(?:\.|$)|$)",
+            replacement,
+            cleaned,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+
+
     # Strip remaining backticks
     cleaned = cleaned.replace("`", "")
 

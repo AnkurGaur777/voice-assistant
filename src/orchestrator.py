@@ -64,6 +64,7 @@ from src.agent.graph import (
 from src.agent.tools.reminders import start_reminder_scheduler, stop_reminder_scheduler
 from src.stt import transcribe_audio, get_transcriber
 from src.tts import DEFAULT_VOICE, get_piper_voice, speak, sanitize_speech_text
+from src.ui.orb_overlay import OrbOverlay, OrbState
 from src.wake_word import WakeWordDetector
 from tray.tray_app import JarvisTrayApp, JarvisTrayState
 
@@ -179,7 +180,8 @@ def print_banner(
     enable_tray: bool,
     enable_memory: bool,
     continuous_mode: bool = True,
-    conversation_timeout: float = 6.0,
+    conversation_timeout: float = 60.0,
+    enable_orb: bool = True,
 ) -> None:
     """Prints a styled startup banner with system configuration."""
     print("\n" + "=" * 78)
@@ -191,13 +193,14 @@ def print_banner(
     print(f"  TTS Engine:        Piper '{voice}' (CPU offline playback)")
     print(f"  Agent Tools:       10 Tools (DateTime, Reminders, Search, Desktop, Clipboard, Sandbox)")
     print(f"  Vector Memory:     {'ChromaDB (all-MiniLM-L6-v2, CPU)' if enable_memory else 'Disabled'}")
-    print(f"  Continuous Mode:   {'Active (' + str(conversation_timeout) + 's silence timeout)' if continuous_mode else 'Disabled (Wake-word only)'}")
+    print(f"  Continuous Mode:   {'Active (' + str(conversation_timeout) + 's silence timeout safety net)' if continuous_mode else 'Disabled (Wake-word only)'}")
     print(f"  System Tray Icon:  {'Active (pystray thread)' if enable_tray else 'Disabled (--no-tray)'}")
+    print(f"  Floating Orb UI:   {'Active (Tkinter Canvas)' if enable_orb else 'Disabled (--no-orb)'}")
     print("  Controls:")
     print("    - Speak 'Hey Jarvis' followed by your command/question hands-free.")
     print("    - Speak follow-up questions hands-free without repeating 'Hey Jarvis'.")
     print("    - Say 'stop', 'goodbye', or 'that's all' to exit active conversation.")
-    print("    - Right-click tray icon -> 'Quit Jarvis' OR press Ctrl+C in console to exit.")
+    print("    - Right-click tray icon or orb -> 'Quit Jarvis' OR press Ctrl+C to exit.")
     print("=" * 78 + "\n")
 
 
@@ -217,9 +220,10 @@ class VoiceAssistantOrchestrator:
         wake_threshold: float = 0.35,
         audio_device: Optional[int] = None,
         enable_tray: bool = True,
+        enable_orb: bool = True,
         enable_memory: bool = True,
         continuous_mode: bool = True,
-        conversation_timeout: float = 6.0,
+        conversation_timeout: float = 60.0,
         stop_phrases: Optional[List[str]] = None,
         debug: bool = False,
     ):
@@ -232,6 +236,7 @@ class VoiceAssistantOrchestrator:
         self.wake_threshold = wake_threshold
         self.audio_device = audio_device
         self.enable_tray = enable_tray
+        self.enable_orb = enable_orb
         self.enable_memory = enable_memory
         self.continuous_mode = continuous_mode
         self.conversation_timeout = conversation_timeout
@@ -245,6 +250,7 @@ class VoiceAssistantOrchestrator:
         self.detector: Optional[WakeWordDetector] = None
         self.agent_app = None
         self.tray_app: Optional[JarvisTrayApp] = None
+        self.orb_overlay: Optional[OrbOverlay] = None
         self.scheduler = None
 
     def initialize(self) -> None:
@@ -284,18 +290,40 @@ class VoiceAssistantOrchestrator:
         # 6. Initialize System Tray App if enabled
         if self.enable_tray:
             print("[Orchestrator] Launching System Tray icon...")
+
+            def toggle_orb():
+                if self.orb_overlay is not None:
+                    self.orb_overlay.toggle_visibility()
+
             self.tray_app = JarvisTrayApp(
                 on_quit=self.stop,
+                on_toggle_orb=toggle_orb if self.enable_orb else None,
                 initial_state=JarvisTrayState.LISTENING,
             )
             self.tray_app.start()
 
+        # 7. Initialize Floating Orb Overlay UI if enabled
+        if self.enable_orb:
+            print("[Orchestrator] Launching Floating Orb Overlay UI...")
+            self.orb_overlay = OrbOverlay(
+                on_quit=self.stop,
+                initial_state=JarvisTrayState.LISTENING.value,
+            )
+            self.orb_overlay.start()
+
         print("[Orchestrator] All components initialized successfully.\n")
 
-    def _set_tray_state(self, state: JarvisTrayState, custom_msg: Optional[str] = None) -> None:
-        """Helper to update tray icon state if tray is enabled."""
+    def _set_ui_state(self, state: JarvisTrayState | str, custom_msg: Optional[str] = None) -> None:
+        """Helper to update both tray icon and floating orb overlay in sync."""
         if self.tray_app is not None:
             self.tray_app.set_state(state, custom_message=custom_msg)
+        if self.orb_overlay is not None:
+            state_val = state.value if isinstance(state, JarvisTrayState) else str(state)
+            self.orb_overlay.set_state(state_val)
+
+    def _set_tray_state(self, state: JarvisTrayState | str, custom_msg: Optional[str] = None) -> None:
+        """Alias for _set_ui_state to preserve backward compatibility."""
+        self._set_ui_state(state, custom_msg)
 
     def run_turn(self) -> bool:
         """
@@ -422,7 +450,7 @@ class VoiceAssistantOrchestrator:
             print("[Pipeline] Stage 5: ENTERING ACTIVE CONVERSATION MODE")
             print("  - Speak follow-up hands-free without repeating 'Hey Jarvis'.")
             print("  - Say 'stop', 'goodbye', or 'that's all' to exit conversation.")
-            print(f"  - Times out quietly after {self.conversation_timeout:.1f}s of silence.")
+            print(f"  - Times out quietly after {self.conversation_timeout:.1f}s of silence (safety net).")
             print("=" * 60)
 
             while not self.shutdown_event.is_set():
@@ -585,6 +613,14 @@ class VoiceAssistantOrchestrator:
                 if self.debug:
                     print(f"[DEBUG] Error stopping tray app: {e}")
 
+        # Stop floating orb overlay
+        if self.orb_overlay is not None:
+            try:
+                self.orb_overlay.stop()
+            except Exception as e:
+                if self.debug:
+                    print(f"[DEBUG] Error stopping orb overlay: {e}")
+
         print("[Orchestrator] Local Jarvis shutdown complete.")
 
 
@@ -649,8 +685,8 @@ def main():
     parser.add_argument(
         "--conversation-timeout",
         type=float,
-        default=6.0,
-        help="Seconds of silence in continuous mode before reverting to wake-word listening (default: 6.0)",
+        default=60.0,
+        help="Seconds of silence in continuous mode before reverting to wake-word listening safety net (default: 60.0)",
     )
     parser.add_argument(
         "--stop-phrases",
@@ -662,6 +698,11 @@ def main():
         "--no-tray",
         action="store_true",
         help="Run in headless console mode without system tray icon",
+    )
+    parser.add_argument(
+        "--no-orb",
+        action="store_true",
+        help="Disable floating glowing orb UI overlay",
     )
     parser.add_argument(
         "--no-memory",
@@ -677,6 +718,7 @@ def main():
     args = parser.parse_args()
 
     enable_tray = not args.no_tray
+    enable_orb = not args.no_orb
     enable_memory = not args.no_memory
     continuous_mode = not args.no_continuous
     stop_phrases_list = (
@@ -690,6 +732,7 @@ def main():
         voice=args.voice,
         whisper_model=args.whisper_model,
         enable_tray=enable_tray,
+        enable_orb=enable_orb,
         enable_memory=enable_memory,
         continuous_mode=continuous_mode,
         conversation_timeout=args.conversation_timeout,
@@ -705,6 +748,7 @@ def main():
         wake_threshold=args.threshold,
         audio_device=args.device,
         enable_tray=enable_tray,
+        enable_orb=enable_orb,
         enable_memory=enable_memory,
         continuous_mode=continuous_mode,
         conversation_timeout=args.conversation_timeout,
