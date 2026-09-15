@@ -296,6 +296,8 @@ def run_python(code: str) -> str:
     - Evaluate numerical expressions, statistics, or unit conversions.
     - Format strings or perform programmatic transformations.
 
+    DO NOT use this tool for getting the current date or time (use get_current_datetime instead; datetime/time imports are prohibited).
+
     Code executes in an isolated child subprocess without filesystem or network access.
     Returns stdout/stderr and expression results capped at 2000 characters.
 

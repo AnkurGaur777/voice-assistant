@@ -116,6 +116,18 @@ class TestSynthesisPipeline(unittest.TestCase):
         self.assertEqual(sr, 22050)
         self.assertEqual(len(audio), 4)
         self.assertEqual(audio.dtype, np.int16)
+        self.mock_voice.synthesize.assert_called_with("Testing audio.", syn_config=None)
+
+    def test_synthesize_sentence_with_length_scale(self):
+        """synthesize_sentence passes SynthesisConfig with length_scale when specified."""
+        audio, sr = synthesize_sentence("Yes?", self.mock_voice, length_scale=1.30)
+        self.assertEqual(sr, 22050)
+        self.assertEqual(len(audio), 4)
+        call_args = self.mock_voice.synthesize.call_args
+        self.assertEqual(call_args[0][0], "Yes?")
+        syn_cfg = call_args[1].get("syn_config")
+        self.assertIsNotNone(syn_cfg)
+        self.assertEqual(syn_cfg.length_scale, 1.30)
 
     @patch("time.sleep")
     @patch("sounddevice.OutputStream")

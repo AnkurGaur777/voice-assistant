@@ -84,8 +84,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "(e.g. \"scroll down\" -> invoke `scroll_window(direction=\"down\", amount=3)`, \"scroll up\" -> invoke `scroll_window(direction=\"up\", amount=3)`). Amount defaults to 3 clicks.\n"
     "- DESKTOP TYPING & ENTER KEY: ALWAYS invoke `type_text(text=\"...\", press_enter=...)` when asked to type text into the active window, "
     "and `press_enter_key()` when asked to press enter or send. NEVER simulate or narrate typing in plain text.\n"
-    "- DATE & TIME QUESTIONS: ALWAYS call the `get_current_datetime` tool for any questions asking for the current date, today's date, current time, day of the week, month, or year (e.g. \"what's the date of today\", \"what time is it\", \"what day is today\"). You do not have an internal clock, so you MUST query `get_current_datetime` for real-time date and time. NEVER state that the date or time is not available or a dynamic value. When synthesizing the final response from `get_current_datetime`, ALWAYS speak a single, concise natural sentence (e.g. \"It's Sunday, September 13th, 1:46 PM\" or \"The time is 1:46 PM\"). NEVER read bullet points, field labels, or raw tool output verbatim.\n"
-    "- MATHEMATICAL CALCULATIONS & PERCENTAGES: ALWAYS use the `run_python` tool to evaluate math, arithmetic, and percentages (e.g. \"what is 358% of 340\" -> invoke `run_python` with code '340 * 3.58'). NEVER call `web_search` for math, arithmetic, or percentage questions.\n"
+    "- DATE & TIME QUESTIONS: ALWAYS call the `get_current_datetime` tool for any questions asking for the current date, today's date, current time, day of the week, month, or year (e.g. \"what's the date of today\", \"what time is it\", \"what day is today\"). `get_current_datetime` is the dedicated, mandatory tool for all time and date queries. NEVER call `run_python` or `web_search` for date or time questions — importing `datetime` or `time` in `run_python` is strictly blocked by sandbox security. You do not have an internal clock, so you MUST query `get_current_datetime` for real-time date and time. NEVER state that the date or time is not available or a dynamic value. When synthesizing the final response from `get_current_datetime`, ALWAYS speak a single, concise natural sentence (e.g. \"It's Sunday, September 13th, 1:46 PM\" or \"The time is 1:46 PM\"). NEVER read bullet points, field labels, or raw tool output verbatim.\n"
+    "- MATHEMATICAL CALCULATIONS & PERCENTAGES: ALWAYS use the `run_python` tool to evaluate math, arithmetic, and percentages (e.g. \"what is 358% of 340\" -> invoke `run_python` with code '340 * 3.58'). NEVER call `web_search` for math, arithmetic, or percentage questions. NEVER use `run_python` for date or time queries (use `get_current_datetime` instead).\n"
     "- When the user makes a statement sharing personal information/preferences (not a question, not a request to DO something), "
     "respond conversationally acknowledging it (e.g. \"Got it, I'll remember that!\") and do NOT call any tool. "
     "Tools should only be called when the user is explicitly asking to perform an action (set a reminder, search, calculate, etc.), "
@@ -101,7 +101,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "- `open_application`: Call this tool whenever the user asks to open, launch, or start an app. Always invoke the tool directly.\n"
     "- `find_and_click_element`: Call this tool whenever the user asks to click, activate, or select an element, button, tab, or menu in an app.\n"
     "- `scroll_window`: Call this tool whenever the user asks to scroll up or scroll down in the current application.\n"
-    "- `get_current_datetime`: Call this tool for any questions regarding the current date, time, day of the week, month, or year. Always use get_current_datetime (never web_search) for date or time queries. Always synthesize into a single natural spoken sentence.\n"
+    "- `get_current_datetime`: Call this tool for any questions regarding the current date, time, day of the week, month, or year. Always use get_current_datetime (NEVER run_python and NEVER web_search) for date or time queries. Always synthesize into a single natural spoken sentence.\n"
     "- When and ONLY when `type_text` or `press_enter_key` was ACTUALLY executed and returned a tool result in the current turn: In your final response, you MUST state the EXACT window name reported in that tool result. "
     "If the tool result states that typing succeeded, you MUST confirm that typing succeeded into that window. "
     "If the tool result states that typing was cancelled, only then report that it was cancelled into that window. "
@@ -193,6 +193,12 @@ def extract_fallback_tool_calls(content: str) -> Tuple[str, List[Dict[str, Any]]
             elif re.search(r"^\d+\s*[\+\-\*\/]\s*\d+", q):
                 tool_name = "run_python"
                 parsed_args = {"code": q}
+        elif tool_name == "run_python":
+            # If run_python was called for date or time, redirect to get_current_datetime
+            code = str(parsed_args.get("code", "")).lower()
+            if any(kw in code for kw in ("datetime", "time.now", "time.time", "time.localtime", "time.strftime")):
+                tool_name = "get_current_datetime"
+                parsed_args = {}
 
         tool_calls.append({
             "name": tool_name,
@@ -502,6 +508,16 @@ def create_llm_node(
                     elif re.search(r"^\d+\s*[\+\-\*\/]\s*\d+", raw_q):
                         tc["name"] = "run_python"
                         tc["args"] = {"code": raw_q}
+                elif tc.get("name") == "run_python":
+                    # Datetime re-routing guard for native tool calls
+                    code = str(tc.get("args", {}).get("code", "")).lower()
+                    clean_user_q = latest_user_query.strip().lower()
+                    is_datetime_code = any(kw in code for kw in ("datetime", "time.time", "time.now", "time.localtime", "time.strftime"))
+                    is_datetime_user_query = any(w in clean_user_q for w in ("what time is it", "what's the time", "tell me the time", "current time", "what is the date", "what's the date", "what day is today", "what date is today", "what day is it", "current date"))
+                    if is_datetime_code or is_datetime_user_query:
+                        print(f"[Tool Redirect] Redirecting run_python to get_current_datetime for query: '{latest_user_query}'")
+                        tc["name"] = "get_current_datetime"
+                        tc["args"] = {}
 
                 tool_name = tc.get("name", "unknown")
                 tool_args = tc.get("args", {})
