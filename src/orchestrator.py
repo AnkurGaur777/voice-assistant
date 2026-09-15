@@ -68,7 +68,7 @@ from src.agent.graph import (
 )
 from src.agent.tools.reminders import start_reminder_scheduler, stop_reminder_scheduler
 from src.analytics.logger import flush_logging, log_interaction, shutdown_logging
-from src.stt import transcribe_audio, get_transcriber
+from src.stt import transcribe_audio, get_transcriber, TranscriptionResult
 from src.tts import DEFAULT_VOICE, get_piper_voice, speak, sanitize_speech_text
 from src.ui.orb_overlay import OrbOverlay, OrbState
 from src.wake_word import (
@@ -90,15 +90,36 @@ DEFAULT_STOP_PHRASES: List[str] = [
     "stop",
     "goodbye",
     "bye",
+    "bye bye",
     "that's all",
     "thats all",
+    "that is all",
+    "that will be all",
+    "that'll be all",
     "thank you jarvis",
     "thank you, jarvis",
     "thank you",
+    "thanks jarvis",
+    "thanks",
     "exit",
     "quit",
     "cancel",
     "nevermind",
+    "never mind",
+    "im done",
+    "i'm done",
+    "we're done",
+    "were done",
+    "done",
+    "that's enough",
+    "thats enough",
+    "enough",
+    "stop listening",
+    "stop talking",
+    "stop now",
+    "stop it",
+    "end conversation",
+    "stop conversation",
 ]
 
 # Configurable short dismissal phrases that silently cancel TTS playback without starting a new query
@@ -125,11 +146,28 @@ def is_stop_phrase(text: str, stop_phrases: Optional[List[str]] = None) -> bool:
     """
     Checks if transcribed user text matches or contains an exit / stop phrase.
     Normalizes punctuation, whitespace, and case.
+    Handles exact matches, prefix/suffix matches, and concise utterances (<= 6 words)
+    containing stop/exit phrases without informational query words.
     """
     if not text or not text.strip():
         return False
     clean = re.sub(r"[^\w\s]", "", text).lower().strip()
+    if not clean:
+        return False
+
+    tokens = clean.split()
     phrases = stop_phrases or DEFAULT_STOP_PHRASES
+
+    # Informational question / action words indicate user is asking a query, not commanding to stop
+    query_words = {"what", "how", "why", "where", "who", "when", "which", "search", "find", "show", "tell", "calculate", "weather"}
+    if any(qw in tokens for qw in query_words):
+        return False
+
+    # Noun phrases referencing stops rather than commands
+    if "bus stop" in clean or "train stop" in clean or "next stop" in clean:
+        return False
+
+    # 1. Exact or prefix/suffix match against configured stop phrases
     for phrase in phrases:
         clean_phrase = re.sub(r"[^\w\s]", "", phrase).lower().strip()
         if not clean_phrase:
@@ -138,6 +176,20 @@ def is_stop_phrase(text: str, stop_phrases: Optional[List[str]] = None) -> bool:
             return True
         if clean.startswith(f"{clean_phrase} ") or clean.endswith(f" {clean_phrase}"):
             return True
+
+    # 2. Match stop phrases within short conversational utterances (<= 6 words),
+    # such as "jarvis stop now", "please stop jarvis", "jarvis stop talking", "can you stop please".
+    if len(tokens) <= 6:
+        for phrase in phrases:
+            clean_phrase = re.sub(r"[^\w\s]", "", phrase).lower().strip()
+            if not clean_phrase:
+                continue
+            p_tokens = clean_phrase.split()
+            p_len = len(p_tokens)
+            for i in range(len(tokens) - p_len + 1):
+                if tokens[i : i + p_len] == p_tokens:
+                    return True
+
     return False
 
 
@@ -210,6 +262,29 @@ def is_jarvis_dismissal(text: str, dismissal_phrases: Optional[List[str]] = None
                     return True
 
     return False
+
+
+def has_jarvis_prefix(text: str, max_word_index: int = 3) -> bool:
+    """
+    Checks if an utterance starts with or contains 'Jarvis' near the start
+    (e.g., 'Jarvis ...', 'Hey Jarvis ...', 'OK Jarvis ...', 'Stop Jarvis').
+
+    Crucially enforced on all barge-in interruptions (both dismissals and new commands)
+    to prevent ambient speech, background noise, or Whisper hallucinations from hijacking
+    active TTS playback.
+
+    :param text: Transcribed utterance text.
+    :param max_word_index: Maximum 0-based token index where 'jarvis' can appear
+                           (default: 3, meaning 'jarvis' must be within the first 4 words).
+    :return: True if 'jarvis' is found within the allowed prefix window.
+    """
+    if not text or not text.strip():
+        return False
+    clean = re.sub(r"[^\w\s]", "", text).lower().strip()
+    tokens = clean.split()
+    if not tokens:
+        return False
+    return any(tok == "jarvis" for tok in tokens[: max_word_index + 1])
 
 
 def is_speaker_echo(interruption_text: str, spoken_text: str) -> bool:
@@ -337,8 +412,8 @@ def print_banner(
     enable_logging: bool = True,
     enable_greeting: bool = True,
     greeting_text: str = "Hello! I'm ready, how can I help you today?",
-    enable_barge_in: bool = True,
-    barge_in_threshold: float = 850.0,
+    enable_barge_in: bool = False,
+    barge_in_threshold: float = 400.0,
     enable_wake_ack: bool = True,
     wake_ack_text: str = "Yes?",
 ) -> None:
@@ -355,7 +430,12 @@ def print_banner(
     print(f"  Vector Memory:     {'ChromaDB (all-MiniLM-L6-v2, CPU)' if enable_memory else 'Disabled'}")
     print(f"  Continuous Mode:   {'Active (' + str(conversation_timeout) + 's silence timeout safety net)' if continuous_mode else 'Disabled (Wake-word only)'}")
     print(f"  Startup Greeting:  {'Active (\"' + greeting_text + '\")' if enable_greeting else 'Disabled (--no-greeting)'}")
-    print(f"  Speech Barge-In:   {'Active (threshold: ' + str(barge_in_threshold) + ' RMS)' if enable_barge_in else 'Disabled (--no-barge-in)'}")
+    barge_in_str = (
+        f"Active (experimental, threshold: {barge_in_threshold:.1f} RMS, requires 'Jarvis' prefix; disable with --no-barge-in)"
+        if enable_barge_in
+        else "Disabled by default (experimental; enable with --barge-in)"
+    )
+    print(f"  Speech Barge-In:   {barge_in_str}")
     print(f"  Interaction Log:   {'Active (analysis/interactions.db)' if enable_logging else 'Disabled (--no-logging)'}")
     print(f"  System Tray Icon:  {'Active (pystray thread)' if enable_tray else 'Disabled (--no-tray)'}")
     print(f"  Floating Orb UI:   {'Active (Tkinter Canvas)' if enable_orb else 'Disabled (--no-orb)'}")
@@ -363,7 +443,10 @@ def print_banner(
     print("    - Speak 'Hey Jarvis' followed by your command/question hands-free.")
     print("    - Speak follow-up questions hands-free without repeating 'Hey Jarvis'.")
     print("    - Say 'stop', 'goodbye', or 'that's all' to exit active conversation.")
-    print("    - Interrupt Jarvis while speaking ('barge-in') to stop or ask a new question.")
+    if enable_barge_in:
+        print("    - Interrupt Jarvis while speaking ('Jarvis stop' or 'Jarvis [question]'). Use --no-barge-in if needed.")
+    else:
+        print("    - Speech Barge-In is experimental and disabled by default. Pass --barge-in to enable.")
     print("    - Right-click tray icon or orb -> 'Quit Jarvis' OR press Ctrl+C to exit.")
     print("=" * 78 + "\n")
 
@@ -394,8 +477,8 @@ class VoiceAssistantOrchestrator:
         stop_phrases: Optional[List[str]] = None,
         enable_greeting: bool = True,
         greeting_text: str = "Hello! I'm ready, how can I help you today?",
-        enable_barge_in: bool = True,
-        barge_in_threshold: float = 850.0,
+        enable_barge_in: bool = False,
+        barge_in_threshold: float = 400.0,
         dismissal_phrases: Optional[List[str]] = None,
         enable_wake_ack: bool = True,
         wake_ack_text: str = "Yes?",
@@ -587,14 +670,17 @@ class VoiceAssistantOrchestrator:
         Instead of aborting playback immediately on microphone energy, playback
         continues while speech is captured in the background.
         Once the user pauses (~0.8s silence), Whisper transcribes the speech:
-        1. If acoustic noise, artifact, or empty: ignored, playback continues seamlessly.
-        2. If speaker echo of assistant voice: ignored, playback continues seamlessly.
-        3. If bare dismissal without 'Jarvis' (e.g. solitary 'stop', 'okay'): ignored to
-           prevent false interruptions from ambient chatter.
+        1. If low confidence / hallucinated speech (no_speech_prob > 0.5 or avg_logprob < -1.0):
+           ignored, playback continues seamlessly.
+        2. If acoustic noise, artifact, or empty: ignored, playback continues seamlessly.
+        3. If speaker echo of assistant voice: ignored, playback continues seamlessly.
         4. If confirmed Jarvis dismissal ('Jarvis stop', 'Jarvis okay', 'Stop Jarvis'):
            aborts playback immediately, silently ends current response, returns (True, None, tts_duration).
-        5. If valid new command or question: aborts playback immediately, returns
-           (True, new_command, tts_duration) to chain directly into the next turn.
+        5. If utterance lacks 'Jarvis' prefix near the start (e.g. solitary 'stop', ambient speech,
+           or unprefixed questions): ignored to prevent false interruptions from ambient chatter.
+        6. If valid new command or question with 'Jarvis' prefix ('Jarvis what time is it'):
+           aborts playback immediately, returns (True, new_command, tts_duration) to chain directly
+           into the next turn.
 
         Args:
             text: Text to speak.
@@ -730,17 +816,43 @@ class VoiceAssistantOrchestrator:
                     wavfile.write(str(clip_path), SAMPLE_RATE, combined_audio)
 
                     interruption_text = ""
+                    no_speech_prob = 0.0
+                    avg_logprob = 0.0
                     try:
                         stt_start = time.perf_counter()
-                        interruption_text = transcribe_audio(
+                        stt_result = transcribe_audio(
                             audio_path=str(clip_path.resolve()),
                             model_size=self.whisper_model,
+                            return_confidence=True,
                         )
                         stt_elapsed = time.perf_counter() - stt_start
-                        print(f"[Barge-in STT] Transcribed in {stt_elapsed:.2f}s: \"{interruption_text}\"")
+                        if isinstance(stt_result, str):
+                            interruption_text = stt_result
+                        else:
+                            interruption_text = getattr(stt_result, "text", str(stt_result))
+                            no_speech_prob = float(getattr(stt_result, "no_speech_prob", 0.0))
+                            avg_logprob = float(getattr(stt_result, "avg_logprob", 0.0))
+                        print(
+                            f"[Barge-in STT] Transcribed in {stt_elapsed:.2f}s: \"{interruption_text}\" "
+                            f"(no_speech_prob={no_speech_prob:.2f}, avg_logprob={avg_logprob:.2f})"
+                        )
                     except Exception as stt_err:
                         print(f"[Barge-in Error] Transcription failed: {stt_err}")
                         interruption_text = ""
+
+                    # Case 0: Low-confidence or hallucinated speech (noise, phantom utterance)
+                    if no_speech_prob > 0.5 or avg_logprob < -1.0:
+                        print(
+                            f"[Barge-in] Sound was low-confidence / hallucinated speech "
+                            f"(no_speech_prob={no_speech_prob:.2f} > 0.5 or avg_logprob={avg_logprob:.2f} < -1.0, "
+                            f"text: \"{interruption_text.strip()}\"). Continuing playback."
+                        )
+                        collecting_speech = False
+                        recorded_frames = []
+                        consecutive_speech_chunks = 0
+                        silence_chunks = 0
+                        pre_roll.clear()
+                        continue
 
                     # Case A: Empty speech or acoustic noise/artifact
                     if not interruption_text or not interruption_text.strip() or is_noise_or_wake_word_artifact(interruption_text):
@@ -770,12 +882,20 @@ class VoiceAssistantOrchestrator:
                         tts_duration = time.perf_counter() - speak_start
                         return True, None, tts_duration
 
-                    # Case D: Bare dismissal without "Jarvis" (e.g. solitary "stop", "okay")
-                    if is_dismissal_phrase(interruption_text, self.dismissal_phrases):
-                        print(
-                            f"[Barge-in] Dismissal word \"{interruption_text}\" lacked required \"Jarvis\" prefix. "
-                            "Ignoring to prevent accidental interruption."
-                        )
+                    # Case D: Utterance lacked required "Jarvis" prefix
+                    # Crucially enforced for ALL interruptions (both dismissals and new commands)
+                    # to prevent ambient speech, background noise, or hallucinations from hijacking playback.
+                    if not has_jarvis_prefix(interruption_text):
+                        if is_dismissal_phrase(interruption_text, self.dismissal_phrases):
+                            print(
+                                f"[Barge-in] Dismissal word \"{interruption_text}\" lacked required \"Jarvis\" prefix. "
+                                "Ignoring to prevent accidental interruption."
+                            )
+                        else:
+                            print(
+                                f"[Barge-in] Interruption \"{interruption_text}\" lacked required \"Jarvis\" prefix. "
+                                "Ignoring to prevent false trigger from ambient sound or speech."
+                            )
                         collecting_speech = False
                         recorded_frames = []
                         consecutive_speech_chunks = 0
@@ -783,7 +903,7 @@ class VoiceAssistantOrchestrator:
                         pre_roll.clear()
                         continue
 
-                    # Case E: Valid new command or question!
+                    # Case E: Valid new command or question with "Jarvis" prefix!
                     print(f"[Barge-in] Valid new command received during playback: \"{interruption_text}\". Aborting TTS and chaining.")
                     interrupt_event.set()
                     tts_thread.join(timeout=1.0)
@@ -1378,15 +1498,22 @@ def main():
         help="Custom spoken text for the startup greeting",
     )
     parser.add_argument(
+        "--barge-in",
+        action="store_true",
+        default=False,
+        help="Enable experimental speech interruption ('barge-in') during TTS playback (requires saying 'Jarvis' to interrupt). Note: barge-in is experimental and may not reliably detect interruptions depending on mic setup. Disabled by default.",
+    )
+    parser.add_argument(
         "--no-barge-in",
         action="store_true",
-        help="Disable speech interruption ('barge-in') during TTS playback",
+        default=False,
+        help="Explicitly disable speech interruption ('barge-in') during TTS playback (already disabled by default).",
     )
     parser.add_argument(
         "--barge-in-threshold",
         type=float,
-        default=850.0,
-        help="Microphone RMS energy threshold for detecting speech interruption during playback (default: 850.0)",
+        default=400.0,
+        help="Microphone RMS energy threshold for detecting speech interruption during playback (default: 400.0). Note: all interruptions require saying 'Jarvis'.",
     )
     parser.add_argument(
         "--dismissal-phrases",
@@ -1441,7 +1568,7 @@ def main():
     enable_logging = not args.no_logging
     continuous_mode = not args.no_continuous
     enable_greeting = not args.no_greeting
-    enable_barge_in = not args.no_barge_in
+    enable_barge_in = bool(args.barge_in and not args.no_barge_in)
     enable_wake_ack = not args.no_wake_ack
     stop_phrases_list = (
         [p.strip() for p in args.stop_phrases.split(",") if p.strip()]

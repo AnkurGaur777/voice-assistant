@@ -415,6 +415,7 @@ class WakeWordDetector:
 
         print(f"[Conversation] Listening hands-free for next utterance (timeout: {speech_timeout:.1f}s)...")
 
+        pre_roll: Deque[np.ndarray] = collections.deque(maxlen=6)
         recorded_frames: List[np.ndarray] = []
         has_user_started_speaking = False
         silence_chunk_count = 0
@@ -434,6 +435,7 @@ class WakeWordDetector:
             elapsed = time.time() - record_start_time
 
             if not has_user_started_speaking:
+                pre_roll.append(chunk)
                 ambient_energies.append(chunk_rms)
                 if len(ambient_energies) > 5:
                     avg_ambient = float(np.median(ambient_energies))
@@ -442,7 +444,7 @@ class WakeWordDetector:
                 if chunk_rms >= speech_energy_threshold:
                     has_user_started_speaking = True
                     silence_chunk_count = 0
-                    recorded_frames.append(chunk)
+                    recorded_frames.extend(pre_roll)
                 elif elapsed > speech_timeout:
                     print(f"[Conversation] No speech detected within {speech_timeout:.1f}s timeout.")
                     return None

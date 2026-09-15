@@ -29,6 +29,7 @@ import sounddevice as sd
 from tqdm import tqdm
 
 from piper import PiperVoice
+from piper.config import SynthesisConfig
 
 # --- Configuration & Paths ---
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -225,9 +226,18 @@ def split_into_sentences(text: str) -> List[str]:
 # 4. Synthesis & Streaming Playback Pipeline
 # ==============================================================================
 
-def synthesize_sentence(sentence: str, voice: PiperVoice) -> Tuple[np.ndarray, int]:
+def synthesize_sentence(
+    sentence: str,
+    voice: PiperVoice,
+    length_scale: Optional[float] = None,
+) -> Tuple[np.ndarray, int]:
     """
     Synthesizes a single sentence with Piper into an int16 numpy array.
+
+    Args:
+        sentence: Sentence string to synthesize.
+        voice: PiperVoice instance.
+        length_scale: Optional phoneme duration multiplier (> 1.0 is slower, < 1.0 is faster).
 
     Returns:
         (audio_data, sample_rate)
@@ -235,7 +245,11 @@ def synthesize_sentence(sentence: str, voice: PiperVoice) -> Tuple[np.ndarray, i
     sample_rate = voice.config.sample_rate
     chunks: List[np.ndarray] = []
 
-    for chunk in voice.synthesize(sentence):
+    syn_config: Optional[SynthesisConfig] = None
+    if length_scale is not None and length_scale != 1.0:
+        syn_config = SynthesisConfig(length_scale=length_scale)
+
+    for chunk in voice.synthesize(sentence, syn_config=syn_config):
         if chunk and chunk.audio_int16_array is not None and len(chunk.audio_int16_array) > 0:
             chunks.append(chunk.audio_int16_array)
 
@@ -249,7 +263,11 @@ def synthesize_sentence(sentence: str, voice: PiperVoice) -> Tuple[np.ndarray, i
 
 # Trailing silence durations (in seconds) to prevent buffer cutoff
 INTER_SENTENCE_PAUSE_SECONDS = 0.15      # 150ms natural pause between sentences
-END_OF_SPEECH_PADDING_SECONDS = 0.25     # 250ms flush padding so last syllables are never clipped
+END_OF_SPEECH_PADDING_SECONDS = 0.35     # 350ms flush padding so last syllables are never clipped
+
+# Speaking rate (length_scale: > 1.0 is slower, < 1.0 is faster)
+DEFAULT_LENGTH_SCALE = 1.0
+SHORT_PHRASE_LENGTH_SCALE = 1.30         # Slower phoneme rate for <= 2 word utterances (e.g. 'Yes?', 'Goodbye!') to avoid rushed slurring
 
 
 def sanitize_speech_text(text: str) -> str:
@@ -333,6 +351,7 @@ def speak(
     blocking: bool = True,
     on_start_playback: Optional[Callable[[float], None]] = None,
     interrupt_event: Optional[threading.Event] = None,
+    length_scale: Optional[float] = None,
 ) -> bool:
     """
     Synthesizes and plays speech using Piper and sounddevice.
@@ -347,6 +366,8 @@ def speak(
     - Appends trailing silence padding to each sentence and explicitly drains the
       operating system / hardware audio buffer before closing the stream, ensuring
       the final syllables of words are never cut off.
+    - Applies a slightly slower speaking rate (length_scale=1.30) for very short phrases (<= 2 words)
+      so brief acknowledgments like 'Yes?' are clearly enunciated and never rushed or slurred.
 
     Args:
         text: The text string to speak.
@@ -355,6 +376,8 @@ def speak(
         on_start_playback: Optional callback invoked with the Time-to-First-Audio (TTFA)
             in seconds when playback actually starts.
         interrupt_event: Optional threading.Event to signal immediate speech playback cancellation.
+        length_scale: Optional explicit speaking rate multiplier (> 1.0 is slower, < 1.0 is faster).
+            If omitted, short phrases (<= 2 words) automatically use SHORT_PHRASE_LENGTH_SCALE (1.30).
 
     Returns:
         bool: True if playback completed normally, False if interrupted or cancelled.
@@ -386,14 +409,35 @@ def speak(
                 for idx, sentence in enumerate(sentences):
                     if stop_event.is_set() or (interrupt_event is not None and interrupt_event.is_set()):
                         break
-                    audio_data, sr = synthesize_sentence(sentence, piper_voice)
+
+                    # Determine speaking rate (length_scale):
+                    # - If explicitly provided to speak(), use it directly.
+                    # - If utterance is very short (<= 2 words, e.g. "Yes?", "Goodbye!"),
+                    #   slow down slightly (SHORT_PHRASE_LENGTH_SCALE = 1.30) so short acknowledgment words
+                    #   sound clear, distinct, and deliberate rather than slurring into "Ye" or "Yeah".
+                    # - For longer sentences, use DEFAULT_LENGTH_SCALE (1.0) to preserve natural conversational pace.
+                    if length_scale is not None:
+                        eff_length_scale = length_scale
+                    else:
+                        words = sentence.split()
+                        if len(words) <= 2:
+                            eff_length_scale = SHORT_PHRASE_LENGTH_SCALE
+                        else:
+                            eff_length_scale = DEFAULT_LENGTH_SCALE
+
+                    audio_data, sr = synthesize_sentence(sentence, piper_voice, length_scale=eff_length_scale)
                     is_last = (idx == total_sentences - 1)
 
                     # Append trailing silence:
                     # - Between sentences: 150ms natural pause
-                    # - End of speech: 250ms flush padding to prevent cutting off trailing syllables
+                    # - End of speech: flush padding so last syllables are never clipped
                     if is_last:
                         pad_sec = END_OF_SPEECH_PADDING_SECONDS
+                        # Short utterances (<= 2 words, e.g. "Yes?", "Goodbye!") are particularly
+                        # susceptible to sound card FIFO buffer underruns and rapid stream teardown.
+                        # Ensure short utterances get generous trailing silence so terminal syllables are fully heard.
+                        if len(sentence.split()) <= 2:
+                            pad_sec = max(pad_sec, 0.40)
                     else:
                         pad_sec = INTER_SENTENCE_PAUSE_SECONDS
 
@@ -467,7 +511,8 @@ def speak(
             if stream is not None and not interrupted:
                 latency = stream.latency
                 output_latency = latency[1] if isinstance(latency, (list, tuple)) else (latency if isinstance(latency, (int, float)) else 0.2)
-                drain_delay = max(float(output_latency), 0.15)
+                # Ensure drain delay covers both reported driver latency plus safety margin for Windows WASAPI/hardware FIFO
+                drain_delay = max(float(output_latency) + 0.15, 0.35)
                 drain_start = time.perf_counter()
                 while time.perf_counter() - drain_start < drain_delay:
                     if stop_event.is_set() or (interrupt_event is not None and interrupt_event.is_set()):
@@ -509,6 +554,7 @@ def synthesize_to_wav(
     text: str,
     output_path: Union[str, Path],
     voice: str = DEFAULT_VOICE,
+    length_scale: Optional[float] = None,
 ) -> Path:
     """
     Synthesizes the entire text and writes it to a .wav audio file.
@@ -517,6 +563,7 @@ def synthesize_to_wav(
         text: Text to synthesize.
         output_path: Destination .wav file path.
         voice: Voice name or alias. Defaults to 'ryan' (DEFAULT_VOICE).
+        length_scale: Optional speaking rate multiplier (> 1.0 is slower, < 1.0 is faster).
 
     Returns:
         Resolved destination Path.
@@ -531,7 +578,11 @@ def synthesize_to_wav(
     sample_rate = piper_voice.config.sample_rate
 
     for s in sentences:
-        audio, sr = synthesize_sentence(s, piper_voice)
+        if length_scale is not None:
+            eff_length_scale = length_scale
+        else:
+            eff_length_scale = SHORT_PHRASE_LENGTH_SCALE if len(s.split()) <= 2 else DEFAULT_LENGTH_SCALE
+        audio, sr = synthesize_sentence(s, piper_voice, length_scale=eff_length_scale)
         if len(audio) > 0:
             all_chunks.append(audio)
             sample_rate = sr

@@ -110,6 +110,49 @@ class TestAgentActionFallback(unittest.TestCase):
         self.assertIn("must ONLY EVER appear when a corresponding live tool result (ToolMessage) actually exists", DEFAULT_SYSTEM_PROMPT)
         self.assertIn("If NO tool was executed in this turn, you MUST NEVER mention typing", DEFAULT_SYSTEM_PROMPT)
 
+    def test_llm_node_redirects_run_python_datetime_to_get_current_datetime(self):
+        """Verifies llm_node automatically redirects run_python with datetime import to get_current_datetime."""
+        mock_llm = MagicMock()
+        mock_response = AIMessage(
+            content="",
+            tool_calls=[{
+                "name": "run_python",
+                "args": {"code": "import datetime\nprint(datetime.datetime.now())"},
+                "id": "call_12345",
+                "type": "tool_call",
+            }],
+        )
+        mock_llm.invoke.return_value = mock_response
+
+        node = create_llm_node(llm=mock_llm, enable_memory=False)
+        state = {"messages": [HumanMessage(content="what time is it")]}
+
+        result = node(state)
+        response_msg = result["messages"][0]
+
+        self.assertEqual(len(response_msg.tool_calls), 1)
+        self.assertEqual(response_msg.tool_calls[0]["name"], "get_current_datetime")
+        self.assertEqual(response_msg.tool_calls[0]["args"], {})
+
+    def test_fallback_redirects_json_run_python_datetime(self):
+        """Verifies extract_fallback_tool_calls redirects JSON tool call with datetime code to get_current_datetime."""
+        from src.agent.graph import extract_fallback_tool_calls
+
+        raw_json = '{"name": "run_python", "args": {"code": "from datetime import datetime; datetime.now()"}}'
+        cleaned, calls = extract_fallback_tool_calls(raw_json)
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["name"], "get_current_datetime")
+        self.assertEqual(calls[0]["args"], {})
+
+    def test_system_prompt_date_time_rules(self):
+        """Verifies that DEFAULT_SYSTEM_PROMPT strictly designates get_current_datetime and forbids run_python."""
+        from src.agent.graph import DEFAULT_SYSTEM_PROMPT
+
+        self.assertIn("ALWAYS call the `get_current_datetime` tool for any questions asking for the current date", DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("NEVER call `run_python` or `web_search` for date or time questions", DEFAULT_SYSTEM_PROMPT)
+        self.assertIn("NEVER use `run_python` for date or time queries (use `get_current_datetime` instead)", DEFAULT_SYSTEM_PROMPT)
+
 
 if __name__ == "__main__":
     unittest.main()

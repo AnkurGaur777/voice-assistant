@@ -32,7 +32,7 @@ def get_current_datetime() -> str:
 
     Use this tool for questions regarding the current date, current time,
     day of the week, month, year, or 'what day is it today'. Always use this tool
-    instead of web_search for date or time questions.
+    instead of run_python or web_search for date or time questions.
 
     CRITICAL FOR FINAL SPEECH:
     You MUST convert the returned date/time information into a single, concise, natural

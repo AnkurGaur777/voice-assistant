@@ -12,6 +12,7 @@ import re
 import sys
 import time
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Dict, Optional, Union
 
 # Suppress Windows HuggingFace Hub symlink cache warning
@@ -26,6 +27,20 @@ DEFAULT_AUDIO_CACHE_DIR = BASE_DIR / "audio_cache"
 
 # Module-level transcriber cache for lazy singleton reuse across pipeline turns
 _TRANSCRIBER_CACHE: Dict[str, "WhisperTranscriber"] = {}
+
+
+@dataclass
+class TranscriptionResult:
+    """
+    Detailed transcription result with confidence and decoding metrics.
+    """
+    text: str
+    no_speech_prob: float = 0.0
+    avg_logprob: float = 0.0
+    duration: float = 0.0
+
+    def __str__(self) -> str:
+        return self.text
 
 
 def clean_transcription(text: str) -> str:
@@ -47,6 +62,16 @@ def clean_transcription(text: str) -> str:
         match = re.match(r"^([^.,;!?]{1,15}[.,;!?])\s+(.+)$", cleaned)
         if match:
             fragment, remainder = match.group(1), match.group(2).strip()
+            # Guard against stripping real commands, stop phrases, salutations, or words directed at the assistant
+            frag_word = re.sub(r"[^\w\s]", "", fragment).lower().strip()
+            protected_words = {
+                "stop", "goodbye", "bye", "exit", "quit", "cancel",
+                "thanks", "thank", "hello", "hi", "hey", "yes", "no",
+                "jarvis", "please", "okay", "ok", "done", "enough",
+            }
+            if any(w in protected_words for w in frag_word.split()):
+                break
+
             if remainder:
                 cleaned = remainder[0].upper() + remainder[1:] if len(remainder) > 1 else remainder.upper()
             else:
@@ -108,15 +133,17 @@ class WhisperTranscriber:
         language: Optional[str] = "en",
         beam_size: int = 5,
         vad_filter: bool = False,
-    ) -> str:
+        return_confidence: bool = False,
+    ) -> Union[str, TranscriptionResult]:
         """
-        Transcribes a given .wav audio file and returns the full recognized text.
+        Transcribes a given .wav audio file and returns the full recognized text or TranscriptionResult.
 
         :param audio_path: Path to the .wav audio file.
         :param language: Spoken language code (e.g., 'en' for English, None for auto-detect).
         :param beam_size: Beam search size for decoding (default: 5).
         :param vad_filter: Enable faster-whisper internal VAD filtering if needed.
-        :return: Transcribed text as a single stripped string with artifact cleanup.
+        :param return_confidence: If True, returns TranscriptionResult with confidence metrics.
+        :return: Transcribed text string (or TranscriptionResult if return_confidence=True).
         """
         path = Path(audio_path).resolve()
         if not path.is_file():
@@ -124,6 +151,8 @@ class WhisperTranscriber:
 
         if path.stat().st_size == 0:
             print(f"Warning: Audio file {path.name} is empty.")
+            if return_confidence:
+                return TranscriptionResult(text="", no_speech_prob=1.0, avg_logprob=-999.0, duration=0.0)
             return ""
 
         # Run transcription on faster-whisper
@@ -135,12 +164,27 @@ class WhisperTranscriber:
             condition_on_previous_text=False,
         )
 
-        # Collect segment texts
-        transcription_parts = [segment.text for segment in segments]
-        transcribed_text = " ".join(transcription_parts).strip()
+        # Collect segment texts and metrics
+        segment_list = list(segments)
+        transcription_parts = [segment.text for segment in segment_list]
+        transcribed_text = clean_transcription(" ".join(transcription_parts).strip())
+
+        if return_confidence:
+            if segment_list:
+                no_speech_prob = float(max(s.no_speech_prob for s in segment_list))
+                avg_logprob = float(sum(s.avg_logprob for s in segment_list) / len(segment_list))
+            else:
+                no_speech_prob = 1.0
+                avg_logprob = -999.0
+            return TranscriptionResult(
+                text=transcribed_text,
+                no_speech_prob=no_speech_prob,
+                avg_logprob=avg_logprob,
+                duration=float(getattr(info, "duration", 0.0)),
+            )
 
         # Post-processing: strip leading short artifact fragments
-        return clean_transcription(transcribed_text)
+        return transcribed_text
 
 
 def get_transcriber(
@@ -172,7 +216,8 @@ def transcribe_audio(
     compute_type: str = "int8",
     language: Optional[str] = "en",
     beam_size: int = 5,
-) -> str:
+    return_confidence: bool = False,
+) -> Union[str, TranscriptionResult]:
     """
     Transcribes an audio clip (.wav file path) and returns the transcribed text.
     Uses a cached transcriber instance to ensure high performance in continuous usage.
@@ -183,7 +228,8 @@ def transcribe_audio(
     :param compute_type: Quantization (default: "int8").
     :param language: Spoken language (default: "en").
     :param beam_size: Beam search width (default: 5).
-    :return: Transcribed text string.
+    :param return_confidence: If True, returns TranscriptionResult with confidence metrics.
+    :return: Transcribed text string (or TranscriptionResult if return_confidence=True).
     """
     transcriber = get_transcriber(
         model_size=model_size,
@@ -194,6 +240,7 @@ def transcribe_audio(
         audio_path=audio_path,
         language=language,
         beam_size=beam_size,
+        return_confidence=return_confidence,
     )
 
 
